@@ -13,34 +13,44 @@ torch.manual_seed(SEED)
 torch.cuda.manual_seed_all(SEED)
 
 # API Configuration
-def load_secrets():
-    """Load secrets from secrets.toml file or Streamlit secrets."""
+def load_openai_api_key():
+    """Load OpenAI API key from various sources."""
     # Try Streamlit secrets first (for cloud deployment)
     try:
         import streamlit as st
-        if hasattr(st, 'secrets'):
-            return {
-                "openai": {
-                    "api_key": st.secrets.get("openai_api_key", st.secrets.get("OPENAI_API_KEY"))
-                }
-            }
-    except (ImportError, AttributeError, FileNotFoundError):
+        if hasattr(st, 'secrets') and st.secrets:
+            # Try different possible key names
+            api_key = (st.secrets.get("OPENAI_API_KEY") or 
+                      st.secrets.get("openai_api_key") or
+                      st.secrets.get("openai", {}).get("api_key"))
+            if api_key:
+                return api_key
+    except (ImportError, AttributeError, FileNotFoundError, Exception):
         pass
+    
+    # Try environment variable
+    api_key = os.environ.get("OPENAI_API_KEY")
+    if api_key:
+        return api_key
     
     # Fallback to local secrets.toml file
     try:
         with open("secrets.toml", "rb") as f:
-            return tomllib.load(f)
+            secrets_data = tomllib.load(f)
+            return secrets_data.get("openai", {}).get("api_key")
     except FileNotFoundError:
-        raise FileNotFoundError(
-            "API key not found. For local development, create secrets.toml with your OpenAI API key. "
-            "For Streamlit Cloud, add OPENAI_API_KEY to your app secrets."
-        )
+        pass
     except Exception as e:
-        raise Exception(f"Error loading secrets: {e}")
+        raise Exception(f"Error loading secrets.toml: {e}")
+    
+    raise ValueError(
+        "OpenAI API key not found. Please set it via:\n"
+        "- Streamlit Cloud: Add 'OPENAI_API_KEY' to app secrets\n"
+        "- Local development: Create secrets.toml with [openai] api_key = 'your-key'\n"
+        "- Environment variable: Set OPENAI_API_KEY"
+    )
 
-secrets = load_secrets()
-OPENAI_API_KEY = secrets.get("openai", {}).get("api_key")
+OPENAI_API_KEY = load_openai_api_key()
 
 # Data Paths
 DATASETS_PATH = "resources/datasets.csv"

@@ -20,7 +20,7 @@ class QueryAnalyzer:
         medical_info = self.detect_medical_condition_query(user_input)
         result['medical_condition_detected'] = medical_info
         
-        # Check if query involves geographic analysis
+        # Check if query involves geographic analysis by asking OPENAI
         geographic_info = self.detect_geographic_analysis_query(user_input)
         result['geographic_analysis_detected'] = geographic_info
         

@@ -1,7 +1,10 @@
 import os
 import numpy as np
 import torch
-import tomllib
+try:
+    import tomllib  # Python 3.11+
+except ImportError:
+    import tomli as tomllib  # Python < 3.11
 
 # Random seed for reproducibility
 SEED = 42
@@ -11,14 +14,30 @@ torch.cuda.manual_seed_all(SEED)
 
 # API Configuration
 def load_secrets():
-    """Load secrets from secrets.toml file."""
+    """Load secrets from secrets.toml file or Streamlit secrets."""
+    # Try Streamlit secrets first (for cloud deployment)
+    try:
+        import streamlit as st
+        if hasattr(st, 'secrets'):
+            return {
+                "openai": {
+                    "api_key": st.secrets.get("openai_api_key", st.secrets.get("OPENAI_API_KEY"))
+                }
+            }
+    except (ImportError, AttributeError, FileNotFoundError):
+        pass
+    
+    # Fallback to local secrets.toml file
     try:
         with open("secrets.toml", "rb") as f:
             return tomllib.load(f)
     except FileNotFoundError:
-        raise FileNotFoundError("secrets.toml file not found. Please create it with your OpenAI API key.")
+        raise FileNotFoundError(
+            "API key not found. For local development, create secrets.toml with your OpenAI API key. "
+            "For Streamlit Cloud, add OPENAI_API_KEY to your app secrets."
+        )
     except Exception as e:
-        raise Exception(f"Error loading secrets.toml: {e}")
+        raise Exception(f"Error loading secrets: {e}")
 
 secrets = load_secrets()
 OPENAI_API_KEY = secrets.get("openai", {}).get("api_key")

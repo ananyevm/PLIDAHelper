@@ -8,6 +8,14 @@ class QueryAnalyzer:
     def __init__(self):
         self.llm_client = LLMClient()
     
+    def check_query_relevance(self, current_query, new_query):
+        """Check if new query is relevant to current conversation."""
+        prompt = self._build_relevance_prompt(current_query, new_query)
+        system_prompt = "You are a helpful assistant analyzing query relevance. Return only valid JSON."
+        
+        response = self.llm_client.complete(system_prompt, prompt)
+        return self._parse_relevance_response(response)
+    
     def analyze_query(self, user_input):
         """Analyze user query for relevance and extract variables."""
         prompt = self._build_analysis_prompt(user_input)
@@ -707,5 +715,65 @@ class QueryAnalyzer:
             'variable_descriptions': ['State identifier', 'Postcode', 'Statistical Area Level 2'],
             'analysis_rationale': 'Geographic analysis requires location identifiers',
             'dataset_sources': ['Census data'],
+            'raw_response': ''
+        }
+    
+    def _build_relevance_prompt(self, current_query, new_query):
+        """Build prompt to check if new query is relevant to current conversation."""
+        return (
+            f"Current conversation query: '{current_query}'\n"
+            f"New user input: '{new_query}'\n\n"
+            "Analyze whether the new user input is relevant to the current conversation topic.\n"
+            "The new input should be considered relevant if:\n"
+            "- It provides additional information, clarification, or context for the current query\n"
+            "- It asks follow-up questions related to the current topic\n"
+            "- It refines or expands on the current research question\n"
+            "- It provides constraints or additional parameters for the current analysis\n\n"
+            "The new input should be considered NOT relevant if:\n"
+            "- It asks about a completely different research topic\n"
+            "- It starts a new, unrelated research question\n"
+            "- It changes the fundamental scope of the analysis\n\n"
+            "Return a JSON object with:\n"
+            "- 'is_relevant': boolean (true if relevant to current conversation)\n"
+            "- 'confidence': float (0.0 to 1.0, confidence in this assessment)\n"
+            "- 'reasoning': string explaining the assessment\n"
+            "- 'combined_query': string (if relevant, combine both queries into a single coherent question)\n\n"
+            "Example: {'is_relevant': true, 'confidence': 0.9, 'reasoning': 'New input provides age constraints for the existing healthcare question', 'combined_query': 'Impact of NDIS on mental healthcare utilization among adults aged 18-65'}"
+        )
+    
+    def _parse_relevance_response(self, response):
+        """Parse and validate the relevance response."""
+        try:
+            # Clean response
+            if response.startswith("```json"):
+                response = response.split("```json", 1)[1].split("```", 1)[0].strip()
+            elif response.startswith("```"):
+                response = response.split("```", 1)[1].split("```", 1)[0].strip()
+            
+            if not response:
+                return self._default_relevance_response()
+            
+            # Parse JSON
+            data = json.loads(response)
+            
+            return {
+                'is_relevant': data.get('is_relevant', False),
+                'confidence': float(data.get('confidence', 0.0)),
+                'reasoning': data.get('reasoning', 'No reasoning provided'),
+                'combined_query': data.get('combined_query', ''),
+                'raw_response': response
+            }
+            
+        except Exception as e:
+            st.warning(f"Error parsing relevance response: {e}")
+            return self._default_relevance_response()
+    
+    def _default_relevance_response(self):
+        """Return default relevance response when parsing fails."""
+        return {
+            'is_relevant': False,
+            'confidence': 0.0,
+            'reasoning': 'Unable to assess relevance',
+            'combined_query': '',
             'raw_response': ''
         }

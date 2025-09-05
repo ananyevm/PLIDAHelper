@@ -209,7 +209,7 @@ class ResultDisplay:
                 
                 st.info(
                     "The following datasets contain the **SYNTHETIC_AEUID** variable, which enables potential "
-                    "data linking capabilities:"
+                    "data linking capabilities. You need to verify the specific linking rules and restrictions with the concordnace files availabe in the ABS datalab "
                 )
                 
                 # Display linkable datasets
@@ -333,11 +333,17 @@ class ResultDisplay:
         """
         # Collect dataset IDs for linking strategy
         all_dataset_ids = []
+        employment_detected = False
+        
         for i, var_desc in enumerate(variables):
             with st.container():
                 # Display variable description
                 container = st.empty()
                 ui.stream_text(container, f"**{i+1}. {var_desc}**")
+                
+                # Check if this is an employment status variable
+                if self._is_employment_status_variable(var_desc):
+                    employment_detected = True
                 
                 # Determine appropriate index
                 index_name, dataset_note, additional_searches = search_filters.get_appropriate_index(
@@ -386,6 +392,10 @@ class ResultDisplay:
                             all_dataset_ids.append(dataset_ids)
                 
                 st.write("---")
+        
+        # Display PIT_ITR earnings variables if employment status detected
+        if employment_detected:
+            self._display_pit_itr_earnings(search_engine, ui, relevant_datasets)
         
         # Display linking strategy at the end of the section
         if all_dataset_ids:
@@ -618,3 +628,138 @@ class ResultDisplay:
             if ai_suggestions.get('raw_response'):
                 st.text("Raw AI Response:")
                 st.write(ai_suggestions['raw_response'])
+    
+    def display_chat_history(self, chat_history):
+        """Display the conversation history."""
+        if not chat_history:
+            return
+        
+        st.markdown("## 💬 **Chat History**")
+        
+        for i, entry in enumerate(chat_history):
+            with st.expander(f"Query {i+1}: {entry['query'][:50]}{'...' if len(entry['query']) > 50 else ''}", expanded=False):
+                st.markdown(f"**Query:** {entry['query']}")
+                
+                if entry['type'] == 'followup':
+                    st.caption(f"**Combined with previous:** {entry.get('combined_query', '')}")
+                    if entry.get('relevance'):
+                        st.caption(f"**Relevance:** {entry['relevance']['reasoning']}")
+                
+                if entry.get('timestamp'):
+                    import datetime
+                    timestamp = datetime.datetime.fromtimestamp(entry['timestamp'])
+                    st.caption(f"**Time:** {timestamp.strftime('%H:%M:%S')}")
+        
+        st.markdown("---")
+    
+    def display_stored_results(self, stored_results):
+        """Display stored results from session state."""
+        if not stored_results:
+            return
+        
+        user_input = stored_results.get('user_input', '')
+        gpt_data = stored_results.get('gpt_data', {})
+        causal_data = stored_results.get('causal_data')
+        relevant_datasets = stored_results.get('relevant_datasets', [])
+        start_time = stored_results.get('start_time', 0)
+        end_time = stored_results.get('end_time', 0)
+        
+        # Display query
+        st.markdown(f"**Research Question:** {user_input}")
+        
+        # Check relevance
+        if gpt_data.get('relevance_score', 0) < 6:
+            self.display_low_relevance()
+            return
+        
+        # Display analysis type
+        if causal_data and causal_data.get('is_causal') and causal_data.get('confidence', 0) > 0.6:
+            st.info(f"📊 Causal Analysis Detected (Confidence: {causal_data['confidence']:.0%})")
+            st.caption(f"*{causal_data.get('reasoning', '')}*")
+        else:
+            st.info("📊 Descriptive Analysis Detected")
+            st.caption("*This question seeks to describe patterns and characteristics rather than causal relationships*")
+        
+        # Show medical condition suggestion if detected
+        if gpt_data.get('medical_condition_detected'):
+            st.success("🏥 **Medical Condition Detected**")
+            medical_info = gpt_data['medical_condition_detected']
+            if medical_info.get('medical_keywords'):
+                keywords_text = ", ".join(medical_info['medical_keywords'])
+                st.caption(f"*Medical terms identified: {keywords_text}*")
+        
+        # Show geographic analysis suggestion if detected
+        if gpt_data.get('geographic_analysis_detected'):
+            st.success("🗺️ **Geographic Analysis Detected**")
+            geographic_info = gpt_data['geographic_analysis_detected']
+            if geographic_info.get('geographic_keywords'):
+                keywords_text = ", ".join(geographic_info['geographic_keywords'])
+                st.caption(f"*Geographic terms identified: {keywords_text}*")
+        
+        # Display relevant datasets
+        if relevant_datasets:
+            st.subheader("📁 Relevant Datasets")
+            for dataset in relevant_datasets:
+                st.write(f"- {dataset}")
+        
+        # Display execution time
+        if start_time and end_time:
+            execution_time = end_time - start_time
+            st.caption(f"Execution time: {execution_time:.2f} seconds")
+        
+        # Note about full results
+        st.caption("💡 *This is a summary of the latest results. The full analysis with variables was displayed when the query was processed.*")
+    
+    def _is_employment_status_variable(self, var_desc):
+        """Check if variable description indicates employment status."""
+        employment_keywords = [
+            'employment status', 'employment', 'employed', 'unemployed', 
+            'job status', 'work status', 'occupation', 'workforce',
+            'labor force', 'labour force', 'jobseeker', 'employment type'
+        ]
+        var_desc_lower = var_desc.lower()
+        return any(keyword in var_desc_lower for keyword in employment_keywords)
+    
+    def _display_pit_itr_earnings(self, search_engine, ui, relevant_datasets):
+        """Display PIT_ITR earnings variables when employment status is detected."""
+        st.markdown("---")
+        st.markdown("### 💰 **Employment Earnings Information**")
+        st.info("📊 **Employment Status Detected** - Additional earnings variables from PIT_ITR dataset:")
+        
+        # Search for earnings variables in PIT_ITR
+        earnings_results = search_engine.search_variables("earnings allowances tips", "ato", boost_datasets=relevant_datasets)
+        
+        if earnings_results:
+            # Filter to only show PIT_ITR results
+            pit_itr_results = [result for result in earnings_results if result['row'].get('dataset_id', '').upper() == 'PIT_ITR']
+            
+            if pit_itr_results:
+                st.success(f"Found {len(pit_itr_results)} earnings-related variables in PIT_ITR dataset:")
+                
+                for i, result in enumerate(pit_itr_results[:5]):  # Show top 5 results
+                    row = result['row']
+                    score = result['score']
+                    
+                    # Create earnings variable display
+                    earnings_text = (
+                        f"**{i+1}.** **Variable:** {row.get('variable_name', 'Unknown')} | "
+                        f"**Dataset:** PIT_ITR (Income Tax Return) | "
+                        f"**Description:** {row.get('description', 'No description')} | "
+                        f"**Score:** {score:.3f}"
+                    )
+                    
+                    container = st.empty()
+                    ui.stream_text(container, earnings_text)
+                
+                # Add employment indicator note
+                st.success(
+                    "💡 **Employment Indicator:** Non-zero values in these earnings variables indicate employment. "
+                    "These tax return variables provide comprehensive employment income information that can be used "
+                    "to identify employed individuals and measure employment earnings."
+                )
+            else:
+                st.warning("No PIT_ITR earnings variables found in the search results.")
+        else:
+            st.warning("No earnings variables found. PIT_ITR dataset may not be available in current search indices.")
+        
+        st.markdown("---")

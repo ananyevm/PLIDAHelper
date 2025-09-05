@@ -22,7 +22,7 @@ class UIComponents:
         
         **3. Important notes:**
         - The Helper errs on the side of inclusion: not all variables displayed may be directly relevant to your query, but none are hallucinated. All results come from actual PLIDA datasets.
-        - The Helper only considers administrative data and survey data. ABS surveys are not included.
+        - The Helper only considers administrative data and Census data. Most of ABS surveys are not included.
         """)
         
         # Add examples

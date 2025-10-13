@@ -5,7 +5,7 @@ from data import DataLoader
 from search import IndexBuilder, SemanticSearchEngine, SearchFilters
 from llm import QueryAnalyzer, CausalAnalyzer
 from ui import UIComponents, ResultDisplay
-from embeddings import EmbeddingManager
+# EmbeddingManager is initialized within other components
 
 # Initialize session state for responses
 if 'current_response' not in st.session_state:
@@ -22,10 +22,13 @@ def initialize_system():
     index_builder = IndexBuilder(data_loader)
     indices, dataframes, embeddings = index_builder.build_all_indices()
     
-    # Create search engine
-    search_engine = SemanticSearchEngine(indices, dataframes)
+    # Initialize query analyzer for LLM client
+    query_analyzer = QueryAnalyzer()
     
-    return data_loader, search_engine, dataframes
+    # Create search engine with LLM client for query expansion
+    search_engine = SemanticSearchEngine(indices, dataframes, query_analyzer.llm_client)
+    
+    return data_loader, search_engine, dataframes, query_analyzer
 
 def capture_and_display_response(user_input, gpt_data, causal_data, relevant_datasets, dataset_results, dataframes, search_engine, search_filters, query_analyzer, causal_analyzer, ui, result_display, start_time):
     """Capture and display a complete response, storing it in session state."""
@@ -44,9 +47,7 @@ def capture_and_display_response(user_input, gpt_data, causal_data, relevant_dat
     
     # Display the response
     with st.container():
-        st.markdown("## 🔍 **Query Results**")
-        
-        # Display the response content
+        # Display the response content directly without header
         display_single_response(response_data, dataframes, search_engine, search_filters, query_analyzer, causal_analyzer, ui, result_display)
 
 def display_single_response(response_data, dataframes, search_engine, search_filters, query_analyzer, causal_analyzer, ui, result_display):
@@ -59,17 +60,53 @@ def display_single_response(response_data, dataframes, search_engine, search_fil
     start_time = response_data['start_time']
     timestamp = response_data['timestamp']
     
-    # Display query
-    st.markdown(f"**Research Question:** {user_input}")
+    # Display narrative introduction
+    reformulated_question = gpt_data.get('reformulated_question', user_input)
+    
+    # Determine analysis type for narrative
+    if causal_data['is_causal'] and causal_data['confidence'] > 0.6:
+        analysis_type = "causal"
+        analysis_description = "examining the causal relationships between variables"
+    else:
+        analysis_type = "descriptive" 
+        analysis_description = "exploring descriptive patterns and characteristics"
+    
+    # Create narrative introduction
+    narrative_intro = f"It seems like you're interested in {reformulated_question.lower()}. This question is **{analysis_type}**, {analysis_description}."
+    
+    # Add variables list if available
+    variables = gpt_data.get('variables', [])
+    if variables:
+        # Remove parenthetical information from variables
+        clean_variables = []
+        for var in variables:
+            # Remove text in parentheses (like "(demography)", "(employment)", etc.)
+            clean_var = var.split('(')[0].strip()
+            clean_variables.append(clean_var)
+        
+        # Create numbered list
+        variables_list = "\n".join([f"{i+1}. {var}" for i, var in enumerate(clean_variables)])
+        narrative_intro += f"\n\nYou may need to consider the following variables:\n{variables_list}"
+    
+    # Polish the narrative with OpenAI
+    try:
+        polished_narrative = query_analyzer.polish_narrative_intro(narrative_intro)
+        st.markdown(polished_narrative)
+    except Exception as e:
+        # Fallback to original narrative if polishing fails
+        st.markdown(narrative_intro)
     
     # Check relevance
     if gpt_data['relevance_score'] < 6:
         result_display.display_low_relevance()
         return
     
-    # Display dataset results
+    # Display dataset results and collect dataset IDs
+    dataset_ids_from_results = set()
     if dataset_results:
-        st.subheader("Most Relevant Datasets")
+        # Create narrative introduction and numbered list for datasets
+        relevant_datasets_list = []
+        
         for result in dataset_results:
             row = result['row']
             score = result['score']
@@ -77,30 +114,34 @@ def display_single_response(response_data, dataframes, search_engine, search_fil
             # Skip ACLD for healthcare
             if not (gpt_data['topic'] == "healthcare" and row["dataset_id"].upper() == "ACLD"):
                 from utils import truncate_description
-                truncated_desc = truncate_description(row['dataset_description'])
-                dataset_text = (
-                    f"- **Dataset:** {row['dataset_id']} | "
-                    f"**Name:** {row['dataset_name']} | "
-                    f"**Description:** {truncated_desc} | "
-                    f"**Score:** {score:.3f}"
-                )
-                st.markdown(dataset_text)
+                truncated_desc = truncate_description(row['dataset_description'], query_analyzer=query_analyzer, context_type="dataset")
+                dataset_text = f"**{row['dataset_id']} - {row['dataset_name']}**: {truncated_desc}"
+                relevant_datasets_list.append(dataset_text)
+                # Collect dataset ID for linking strategy
+                if row.get('dataset_id'):
+                    dataset_ids_from_results.add(row['dataset_id'])
+        
+        # Display narrative introduction and numbered list
+        if relevant_datasets_list:
+            st.markdown("Here are the PLIDA data assets that might be relevant for your question:")
+            for i, dataset_text in enumerate(relevant_datasets_list, 1):
+                st.markdown(f"{i}. {dataset_text}")
     
     # Display medical condition suggestion BEFORE variables if detected
-    if gpt_data.get('medical_condition_detected'):
+    medical_info = gpt_data.get('medical_condition_detected', {})
+    if medical_info.get('is_medical', False):
         result_display.display_medical_condition_suggestion(
-            gpt_data['medical_condition_detected'],
+            medical_info,
             dataframes['datasets'],
-            relevant_datasets
+            relevant_datasets,
+            query_analyzer
         )
     
     # Process variables based on whether query is causal
     variables = gpt_data['variables']
+    all_dataset_ids = []
     
     if causal_data['is_causal'] and causal_data['confidence'] > 0.6:
-        # Display causal analysis info
-        st.info(f"📊 Causal Analysis Detected (Confidence: {causal_data['confidence']:.0%})")
-        st.caption(f"*{causal_data['reasoning']}*")
         
         # Categorize variables for causal analysis
         categorized = causal_analyzer.categorize_variables(
@@ -110,7 +151,7 @@ def display_single_response(response_data, dataframes, search_engine, search_fil
         )
         
         # Display categorized variables with dataset prioritization
-        result_display.display_causal_variables(
+        variable_dataset_ids = result_display.display_causal_variables(
             categorized,
             search_engine,
             search_filters,
@@ -120,11 +161,10 @@ def display_single_response(response_data, dataframes, search_engine, search_fil
             user_input,
             query_analyzer
         )
+        if variable_dataset_ids:
+            all_dataset_ids.extend(variable_dataset_ids)
         
     else:
-        # Descriptive analysis (non-causal)
-        st.info("📊 Descriptive Analysis Detected")
-        st.caption("*This question seeks to describe patterns and characteristics rather than causal relationships*")
         
         # Categorize variables for descriptive analysis
         categorized = causal_analyzer.descriptive_categorize_variables(
@@ -134,7 +174,7 @@ def display_single_response(response_data, dataframes, search_engine, search_fil
         )
         
         # Display categorized variables for descriptive analysis with dataset prioritization
-        result_display.display_descriptive_variables(
+        variable_dataset_ids = result_display.display_descriptive_variables(
             categorized,
             search_engine,
             search_filters,
@@ -144,16 +184,25 @@ def display_single_response(response_data, dataframes, search_engine, search_fil
             user_input,
             query_analyzer
         )
+        if variable_dataset_ids:
+            all_dataset_ids.extend(variable_dataset_ids)
     
-    # Display geographic analysis suggestion AFTER everything else
-    if gpt_data.get('geographic_analysis_detected'):
-        result_display.display_geographic_analysis_suggestion(
-            gpt_data['geographic_analysis_detected'],
-            search_engine,
-            relevant_datasets,
-            user_input,
-            query_analyzer
-        )
+    
+    # Display single linking strategy at the very end for all datasets mentioned
+    # Combine dataset IDs from results and variables
+    all_combined_dataset_ids = list(dataset_ids_from_results)
+    if all_dataset_ids:
+        # Flatten the list of sets from variables and add to combined list
+        for dataset_id_set in all_dataset_ids:
+            if isinstance(dataset_id_set, set):
+                all_combined_dataset_ids.extend(list(dataset_id_set))
+            else:
+                all_combined_dataset_ids.append(dataset_id_set)
+    
+    # Remove duplicates and display linking strategy if any datasets found
+    unique_dataset_ids = list(set(all_combined_dataset_ids))
+    if unique_dataset_ids:
+        result_display.check_and_display_linking_strategy([set(unique_dataset_ids)])
     
     # Display execution time
     execution_time = timestamp - start_time
@@ -171,10 +220,8 @@ def main():
     
     # Initialize system
     try:
-        data_loader, search_engine, dataframes = initialize_system()
-        query_analyzer = QueryAnalyzer()
+        data_loader, search_engine, dataframes, query_analyzer = initialize_system()
         causal_analyzer = CausalAnalyzer()
-        embedding_manager = EmbeddingManager()
         search_filters = SearchFilters()
     except Exception as e:
         st.error(f"Error initializing system: {e}")
@@ -189,7 +236,6 @@ def main():
     # Display previous response if exists
     if st.session_state.current_response and not user_input:
         with st.container():
-            st.markdown("## 🔍 **Previous Query Results**")
             display_single_response(
                 st.session_state.current_response, 
                 dataframes, search_engine, search_filters, 
@@ -198,7 +244,7 @@ def main():
             
             # Add new query option
             st.markdown("---")
-            st.info("You can submit a new query by opening a new chat above.")
+            st.write("You can submit a new query by opening a new chat above.")
     
     if user_input:
         start_time = time.time()
@@ -224,13 +270,30 @@ def main():
                     if not (gpt_data['topic'] == "healthcare" and row["dataset_id"].upper() == "ACLD"):
                         relevant_datasets.append(row['dataset_name'])
                 
-                # Handle medical condition detection and add PBS if needed
-                if gpt_data.get('medical_condition_detected'):
+                # Handle medical condition detection and add PBS and MBS to dataset_results
+                medical_info = gpt_data.get('medical_condition_detected', {})
+                if medical_info.get('is_medical', False):
+                    # Add PBS dataset to dataset_results if not already present
                     pbs_row = dataframes['datasets'][dataframes['datasets']["dataset_id"].str.upper() == "PBS"]
                     if not pbs_row.empty:
-                        pbs_name = pbs_row.iloc[0]['dataset_name']
-                        if pbs_name not in relevant_datasets:
+                        pbs_data = pbs_row.iloc[0]
+                        pbs_name = pbs_data['dataset_name']
+                        # Check if PBS is not already in dataset_results
+                        pbs_exists = any(result['row']['dataset_name'] == pbs_name for result in dataset_results)
+                        if not pbs_exists and pbs_name not in relevant_datasets:
+                            dataset_results.append({'row': pbs_data, 'score': 1.0})
                             relevant_datasets.append(pbs_name)
+                    
+                    # Add MBS dataset to dataset_results if not already present
+                    mbs_row = dataframes['datasets'][dataframes['datasets']["dataset_id"].str.upper() == "MBS"]
+                    if not mbs_row.empty:
+                        mbs_data = mbs_row.iloc[0]
+                        mbs_name = mbs_data['dataset_name']
+                        # Check if MBS is not already in dataset_results
+                        mbs_exists = any(result['row']['dataset_name'] == mbs_name for result in dataset_results)
+                        if not mbs_exists and mbs_name not in relevant_datasets:
+                            dataset_results.append({'row': mbs_data, 'score': 1.0})
+                            relevant_datasets.append(mbs_name)
                 
                 # Store and display the complete response
                 capture_and_display_response(
@@ -241,7 +304,7 @@ def main():
                 
                 # Add new query option after response
                 st.markdown("---")
-                st.info("You can submit a new query by opening a new chat above.")
+                st.write("You can submit a new query by opening a new chat above.")
             
         except Exception as e:
             st.error(f"Error processing query: {e}")

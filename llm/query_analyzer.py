@@ -419,7 +419,7 @@ class QueryAnalyzer:
             "- NEVER use the word 'status' in variable descriptions (use 'employment' instead of 'employment status', 'marital information' instead of 'marital status', etc.) "
             "- NEVER use hierarchical terms like 'household head', 'head of household', 'family head' or similar. Instead use inclusive language like 'adults in household', 'primary earner', 'main income provider', or 'household members'. "
             "- Use person-first, inclusive language that doesn't assume family hierarchies. "
-            "- DO NOT include indigenous information or variables UNLESS the user query explicitly mentions indigenous people, Aboriginal people, Torres Strait Islander people, First Nations, or asks specifically about indigenous topics. When the user DOES explicitly mention these groups, then DO include indigenous identity variables as they are essential for the analysis. "
+            "- DO NOT include indigenous information or variables UNLESS the user query explicitly mentions indigenous people, Aboriginal people, Torres Strait Islander people, First Nations, or asks specifically about indigenous topics. When the user DOES explicitly mention these groups, then DO include indigenous identity variables as they are essential for the analysis and ALWAYS append '(indig)' to ANY variable description that relates to Indigenous/Aboriginal/Torres Strait Islander identity or characteristics. For example: 'Indigenous identity (indig)', 'Aboriginal identity (indig)', 'Torres Strait Islander identity (indig)'. "
             "- ALWAYS include location or geographic variables when the user query explicitly mentions them. For example, if the query mentions 'state', 'geography', 'location', 'area', 'region', 'suburb', 'postcode', or any geographic terms, include the relevant geographic variable. Common geographic variables include 'state', 'region', 'area', 'location'. DO NOT include geographic variables only when the query has no geographic component at all. "
             "For demographic variables (e.g., age, sex, gender, year of birth), "
             "append '(demography)' to the description. "
@@ -663,6 +663,49 @@ class QueryAnalyzer:
             'raw_response': ''
         }
     
+    def score_dataset_relevance(self, user_query, dataset_id, dataset_name, dataset_description):
+        """Score how relevant a dataset is to the user query (0.0 to 1.0)."""
+        prompt = self._build_dataset_relevance_prompt(user_query, dataset_id, dataset_name, dataset_description)
+        system_prompt = "You are an expert in Australian administrative datasets and research methodology. Return only a single number between 0.0 and 1.0."
+        
+        try:
+            response = self.llm_client.complete(system_prompt, prompt)
+            # Extract the score from the response
+            score_str = response.strip().replace(',', '.')  # Handle comma decimal separators
+            score = float(score_str)
+            # Ensure score is within bounds
+            return max(0.0, min(1.0, score))
+        except Exception as e:
+            # Return moderate score if scoring fails
+            return 0.5
+    
+    def _build_dataset_relevance_prompt(self, user_query, dataset_id, dataset_name, dataset_description):
+        """Build prompt for dataset relevance scoring."""
+        return (
+            f"User Research Query: '{user_query}'\n\n"
+            f"Dataset to Evaluate:\n"
+            f"- ID: {dataset_id}\n"
+            f"- Name: {dataset_name}\n"
+            f"- Description: {dataset_description}\n\n"
+            "Score how relevant this dataset is to answering the user's research question on a scale of 0.0 to 1.0:\n"
+            "- 0.0 = Completely irrelevant (no connection to the research question)\n"
+            "- 0.3 = Low relevance (weak or indirect connection)\n"
+            "- 0.5 = Moderate relevance (some useful information but not ideal)\n"
+            "- 0.7 = High relevance (contains important data for the research)\n"
+            "- 1.0 = Perfect relevance (ideal dataset for this research question)\n\n"
+            "Consider:\n"
+            "- Does the dataset contain variables directly related to the research question?\n"
+            "- Does the population coverage match the research needs?\n"
+            "- Are there data quality or completeness concerns?\n"
+            "- How well does the dataset's purpose align with the research goals?\n\n"
+            "Special considerations:\n"
+            "- For Indigenous/Aboriginal research: COMBINED dataset should score higher than migration datasets\n"
+            "- For life expectancy research: DEATHS dataset should score very high\n"
+            "- For medical conditions: PBS/MBS datasets should score high\n"
+            "- Migration datasets (SDB, MT_DEMOGS) should score low for Indigenous research\n\n"
+            "Return only the numerical score (e.g., 0.8):"
+        )
+
     def generate_concise_description(self, description, context_type="dataset"):
         """Generate a concise, legible one-sentence description using OpenAI."""
         if len(description) <= 100:

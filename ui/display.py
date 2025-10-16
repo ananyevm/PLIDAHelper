@@ -1,6 +1,7 @@
 import streamlit as st
 import re
 from .components import UIComponents
+from .variable_search_helper import VariableSearchHelper
 from utils import truncate_description
 from config.topics import TOPIC_QUERIES
 from embeddings import EmbeddingManager
@@ -9,6 +10,7 @@ class ResultDisplay:
     def __init__(self):
         self.ui = UIComponents()
         self.embedding_manager = EmbeddingManager()
+        self.search_helper = VariableSearchHelper()
     
     def display_low_relevance(self):
         """Display message for low relevance queries."""
@@ -178,7 +180,7 @@ class ResultDisplay:
                 
                 if recommendation['recommended_datasets']:
                     # Display dataset recommendations
-                    st.markdown(f"**We recommend referring to the documentation of these datasets for '{variable_desc}':**")
+                    st.markdown(f"We recommend referring to the documentation of these datasets for '{variable_desc}':")
                     
                     for dataset_id in recommendation['recommended_datasets']:
                         # Find the dataset info
@@ -189,7 +191,7 @@ class ResultDisplay:
                     
                     # Add reasoning if provided
                     if recommendation['reasoning']:
-                        st.caption(f"*{recommendation['reasoning']}*")
+                        st.write(f"{recommendation['reasoning']}")
                 else:
                     # Fallback to original message
                     no_results_container = st.empty()
@@ -604,96 +606,13 @@ class ResultDisplay:
         """
         all_dataset_ids = []
         
-        for var_desc in variables:
-            # Determine appropriate index
-            index_name, dataset_note, additional_searches = search_filters.get_appropriate_index(
-                var_desc, topic
-            )
-            
-            # Enhance query for employment variables
-            search_query = var_desc
-            if search_filters.is_employment_variable(var_desc):
-                search_query += " jobseeker"
-            
-            # Enhance query for location variables (but not for simple state queries)
-            if self._is_location_variable(var_desc) and not re.search(r'\bstate\b', var_desc.lower()):
-                search_query += " SA1 SA2 SA3 SA4"
-            
-            # Check if this is a core demographic variable that should only search CORE datasets
-            if self._is_core_only_variable(var_desc):
-                # For demographic variables, search only CORE datasets
-                var_results = self._search_core_only_variable(search_query, search_engine)
-            else:
-                # For other variables, use enhanced search with query expansion
-                var_results = search_engine.search_variables(
-                    search_query, 
-                    index_name, 
-                    boost_datasets=relevant_datasets,
-                    topic=topic,
-                    use_expansion=True,
-                    use_openai_relevance=True,
-                    conceptual_variable=var_desc
-                )
-                var_results = search_engine.deduplicate_results(var_results)
-            
-            # Apply population filtering if available
-            if user_input and query_analyzer and var_results:
-                var_results = query_analyzer.check_population_match(var_desc, var_results, search_engine)
-            
-            # Collect dataset IDs from results
-            if var_results:
-                dataset_ids = self._extract_dataset_ids_from_results(var_results)
-                if dataset_ids:
-                    all_dataset_ids.append(dataset_ids)
-            
-            # Perform additional searches for employment variables
-            for additional in additional_searches:
-                enhanced_query = var_desc + additional['query_suffix']
-                add_results = search_engine.search_variables(
-                    enhanced_query, 
-                    additional['index'], 
-                    boost_datasets=relevant_datasets,
-                    topic=topic,
-                    use_expansion=True,
-                    use_openai_relevance=True,
-                    conceptual_variable=enhanced_query
-                )
-                add_results = search_engine.deduplicate_results(add_results)
-                
-                # Apply population filtering to additional results
-                if user_input and query_analyzer and add_results:
-                    add_results = query_analyzer.check_population_match(enhanced_query, add_results, search_engine)
-                
-                if add_results:
-                    dataset_ids = self._extract_dataset_ids_from_results(add_results)
-                    if dataset_ids:
-                        all_dataset_ids.append(dataset_ids)
+        # Use the helper to collect dataset IDs from all variables
+        all_dataset_ids = self.search_helper.collect_datasets_from_variables(
+            variables, search_engine, search_filters, topic, relevant_datasets, user_input, query_analyzer
+        )
         
         return all_dataset_ids
     
-    def _extract_dataset_ids_from_results(self, search_results):
-        """Extract dataset IDs from search results.
-        
-        Args:
-            search_results: List of search result dictionaries
-            
-        Returns:
-            Set of dataset IDs
-        """
-        # Deduplicate search results based on dataset, variable name, and description
-        search_results = self._deduplicate_variable_results(search_results)
-        
-        # Filter results by OpenAI relevance score (only show variables with >51% relevance)
-        search_results = self._filter_by_relevance_score(search_results, min_threshold=0.51)
-        
-        # Collect all dataset IDs from results
-        dataset_ids = set()
-        for result in search_results:
-            dataset_id = result['row'].get('dataset_id', '')
-            if dataset_id:
-                dataset_ids.add(dataset_id)
-        
-        return dataset_ids
     
     def display_datasets_and_variables(self, dataset_results, categorized, search_engine, search_filters, topic, ui, relevant_datasets, user_input, query_analyzer, causal_data, unique_dataset_ids, dataframes, loading_container=None, is_longitudinal=False):
         """Display datasets and variables together in a unified interface.
@@ -714,8 +633,9 @@ class ResultDisplay:
             loading_container: Loading indicator container to clear when display starts
         """
         # First display all datasets found
+        filtered_dataset_ids = []
         if dataset_results or unique_dataset_ids:
-            self._display_unified_datasets(dataset_results, unique_dataset_ids, dataframes, query_analyzer, topic, loading_container, is_longitudinal)
+            filtered_dataset_ids = self._display_unified_datasets(dataset_results, unique_dataset_ids, dataframes, query_analyzer, topic, loading_container, is_longitudinal, user_input)
         
         # Then display variables
         if categorized:
@@ -748,11 +668,11 @@ class ResultDisplay:
                     dataframes
                 )
         
-        # Display linking strategy at the end
-        if unique_dataset_ids:
-            self.check_and_display_linking_strategy([set(unique_dataset_ids)], is_longitudinal)
+        # Display linking strategy at the end using only filtered datasets
+        if filtered_dataset_ids:
+            self.check_and_display_linking_strategy([set(filtered_dataset_ids)], is_longitudinal)
     
-    def _display_unified_datasets(self, dataset_results, unique_dataset_ids, dataframes, query_analyzer, topic, loading_container=None, is_longitudinal=False):
+    def _display_unified_datasets(self, dataset_results, unique_dataset_ids, dataframes, query_analyzer, topic, loading_container=None, is_longitudinal=False, user_input=None):
         """Display unified list of datasets from both search results and variables.
         
         Args:
@@ -823,13 +743,45 @@ class ResultDisplay:
                             }
                             dataset_info_list.append(dataset_info)
         
-        # Display the unified dataset list
+        # Display the unified dataset list with relevance scores
+        if not dataset_info_list:
+            return []  # Return empty list if no datasets to display
+        
         if dataset_info_list:
             st.markdown("---")
             st.markdown("Here are the PLIDA data assets that might be relevant for your question:")
+            
+            # Add relevance scores if query_analyzer and user_input are available
+            if query_analyzer and user_input:
+                # Show progress indicator while scoring
+                with st.spinner("Scoring dataset relevance..."):
+                    # Score datasets for relevance
+                    for dataset_info in dataset_info_list:
+                        try:
+                            score = query_analyzer.score_dataset_relevance(
+                                user_input,
+                                dataset_info['id'],
+                                dataset_info['name'], 
+                                dataset_info['description']
+                            )
+                            dataset_info['relevance_score'] = score
+                        except Exception:
+                            dataset_info['relevance_score'] = 0.5  # Default score if scoring fails
+                
+                # Filter out datasets with relevance < 0.1
+                dataset_info_list = [dataset for dataset in dataset_info_list 
+                                   if dataset.get('relevance_score', 0.5) >= 0.1]
+                
+                # Sort by relevance score (highest first)
+                dataset_info_list.sort(key=lambda x: x.get('relevance_score', 0.5), reverse=True)
+            
+            # Display datasets without showing relevance scores
             for i, dataset_info in enumerate(dataset_info_list, 1):
                 dataset_text = f"**{dataset_info['id']} - {dataset_info['name']}**: {dataset_info['description']}"
                 st.markdown(f"{i}. {dataset_text}")
+        
+        # Return the filtered dataset IDs for linkage strategy
+        return [dataset_info['id'] for dataset_info in dataset_info_list]
 
     def display_causal_variables(self, categorized, search_engine, search_filters, topic, ui, relevant_datasets=None, user_input=None, query_analyzer=None, is_longitudinal=False, dataframes=None):
         """Display variables categorized for causal analysis.
@@ -950,74 +902,27 @@ class ResultDisplay:
                 if self._is_employment_status_variable(var_desc):
                     employment_detected = True
                 
-                # Determine appropriate index
-                index_name, dataset_note, additional_searches = search_filters.get_appropriate_index(
-                    var_desc, topic
+                # Search and process the variable using the helper
+                var_results, dataset_note, additional_results = self.search_helper.search_and_process_variable(
+                    var_desc, search_engine, search_filters, query_analyzer, 
+                    user_input, topic, relevant_datasets, is_longitudinal, available_datasets
                 )
                 
-                # Enhance query for employment variables
-                search_query = var_desc
-                if search_filters.is_employment_variable(var_desc):
-                    search_query += " jobseeker"
-                
-                # Enhance query for location variables (but not for simple state queries)
-                if self._is_location_variable(var_desc) and not re.search(r'\bstate\b', var_desc.lower()):
-                    search_query += " SA1 SA2 SA3 SA4"
-                
-                # Check if this is a core demographic variable that should only search CORE datasets
-                if self._is_core_only_variable(var_desc):
-                    # For demographic variables, search only CORE datasets
-                    var_results = self._search_core_only_variable(search_query, search_engine)
-                else:
-                    # For other variables, use enhanced search with query expansion
-                    var_results = search_engine.search_variables(
-                        search_query, 
-                        index_name, 
-                        boost_datasets=relevant_datasets,
-                        topic=topic,
-                        use_expansion=True,
-                        use_openai_relevance=True,
-                        conceptual_variable=var_desc
-                    )
-                    var_results = search_engine.deduplicate_results(var_results)
-                
-                # Apply population filtering if available
-                if user_input and query_analyzer and var_results:
-                    # Use the specific variable description for population matching instead of original user query
-                    var_results = query_analyzer.check_population_match(var_desc, var_results, search_engine)
-                
-                # Display results and collect dataset IDs
+                # Display main variable results
                 if var_results:
-                    dataset_ids = self.display_variable_results(var_desc, i, var_results, dataset_note, query_analyzer, is_longitudinal, available_datasets)
+                    dataset_ids = self.display_variable_results(
+                        var_desc, i, var_results, dataset_note, query_analyzer, is_longitudinal, available_datasets
+                    )
                     if dataset_ids:
                         all_dataset_ids.append(dataset_ids)
-                # If no results, continue silently
                 
-                # Perform additional searches for employment variables
-                for additional in additional_searches:
-                    enhanced_query = var_desc + additional['query_suffix']
-                    add_results = search_engine.search_variables(
-                        enhanced_query, 
-                        additional['index'], 
-                        boost_datasets=relevant_datasets,
-                        topic=topic,
-                        use_expansion=True,
-                        use_openai_relevance=True,
-                        conceptual_variable=enhanced_query
+                # Display additional search results
+                for add_results, note in additional_results:
+                    dataset_ids = self.display_variable_results(
+                        var_desc, i, add_results, note, query_analyzer, is_longitudinal, available_datasets
                     )
-                    add_results = search_engine.deduplicate_results(add_results)
-                    
-                    # Apply population filtering to additional results
-                    if user_input and query_analyzer and add_results:
-                        # Use the enhanced query for additional searches instead of original user query
-                        add_results = query_analyzer.check_population_match(enhanced_query, add_results, search_engine)
-                    
-                    if add_results:
-                        dataset_ids = self.display_variable_results(
-                            var_desc, i, add_results, additional['note'], query_analyzer, is_longitudinal, available_datasets
-                        )
-                        if dataset_ids:
-                            all_dataset_ids.append(dataset_ids)
+                    if dataset_ids:
+                        all_dataset_ids.append(dataset_ids)
                 
                 # Removed horizontal line for cleaner display
         
@@ -1174,23 +1079,94 @@ class ResultDisplay:
     
     def _is_employment_status_variable(self, var_desc):
         """Check if variable description indicates employment status."""
-        employment_keywords = [
-            'employment status', 'employment', 'employed', 'unemployed', 
-            'job status', 'work status', 'occupation', 'workforce',
-            'labor force', 'labour force', 'jobseeker', 'employment type'
-        ]
-        var_desc_lower = var_desc.lower()
-        return any(keyword in var_desc_lower for keyword in employment_keywords)
+        from .variable_search_strategy import VariableType
+        return VariableType.is_employment(var_desc)
     
-    def _is_location_variable(self, var_desc):
-        """Check if variable description indicates location/geographic information."""
-        location_keywords = [
-            'location', 'geographic', 'geography', 'area', 'region', 'suburb',
-            'postcode', 'address', 'state', 'territory', 'city', 'town',
-            'residential', 'residence', 'place', 'spatial', 'locality'
-        ]
-        var_desc_lower = var_desc.lower()
-        return any(keyword in var_desc_lower for keyword in location_keywords)
+    def _search_combined_only_variable(self, search_query, search_engine):
+        """Search for variables only in COMBINED dataset for Indigenous variables."""
+        try:
+            import pandas as pd
+            
+            # Remove (indig) suffix from search query for cleaner search
+            if search_query.strip().endswith('(indig)'):
+                search_query = search_query.replace('(indig)', '').strip()
+            
+            # Load plida4.csv directly
+            plida4_df = pd.read_csv('resources/plida4.csv')
+            
+            # Filter for COMBINED dataset only
+            combined_variables = plida4_df[plida4_df['dataset_id'] == 'COMBINED'].copy()
+            
+            if combined_variables.empty:
+                return []
+            
+            # Search for matches in COMBINED variables
+            results = []
+            query_lower = search_query.lower()
+            
+            for _, row in combined_variables.iterrows():
+                description = str(row['description']).lower()
+                variable_name = str(row['variable_name']).lower()
+                combined_text = f"{description} {variable_name}"
+                
+                score = 0
+                
+                # Score based on query terms
+                query_terms = query_lower.split()
+                for term in query_terms:
+                    if len(term) > 1:  # Allow 2+ character terms
+                        # Exact variable name match gets highest priority
+                        if term == variable_name:
+                            score += 10  # Exact match gets top score
+                        elif term in variable_name:
+                            score += 5  # Partial variable name match
+                        elif term in description:
+                            score += 1  # Description match
+                
+                # Special handling for Indigenous-related keywords
+                indigenous_keywords = ['indigenous', 'aboriginal', 'torres', 'strait', 'islander', 'first', 'nations', 'atsi']
+                for keyword in indigenous_keywords:
+                    if keyword in query_lower:
+                        if keyword in combined_text:
+                            score += 8  # High boost for Indigenous keyword matches
+                
+                # Only include results with positive scores
+                if score > 0:
+                    # Normalize score
+                    normalized_score = max(0.1, min(score / 10.0, 1.0))
+                    
+                    result = {
+                        'score': normalized_score,
+                        'row': {
+                            'dataset_id': row['dataset_id'],
+                            'dataset': row['dataset'],
+                            'variable_name': row['variable_name'],
+                            'description': row['description']
+                        }
+                    }
+                    results.append(result)
+            
+            # Sort by score and return top results
+            results = sorted(results, key=lambda x: (x['score'], x['row'].get('variable_name', '')), reverse=True)
+            
+            # Add OpenAI relevance scoring if available
+            final_results = results[:5]  # Get top 5 COMBINED results
+            
+            # Add OpenAI relevance scores if search_engine has relevance_scorer
+            if hasattr(search_engine, 'relevance_scorer') and search_engine.relevance_scorer:
+                try:
+                    final_results = search_engine._add_openai_relevance_scores(final_results, search_query)
+                except Exception as e:
+                    # If OpenAI scoring fails, add default scores
+                    for result in final_results:
+                        result['openai_relevance'] = 0.7  # Higher default for Indigenous variables
+                        result['relevance_explanation'] = "Indigenous variable from COMBINED dataset"
+            
+            return final_results
+            
+        except Exception as e:
+            # Fallback: return empty list if search fails
+            return []
     
     def _display_pit_itr_earnings(self, search_engine, ui, relevant_datasets, start_number):
         """Display PIT_ITR earnings variables when employment status is detected."""

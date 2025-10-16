@@ -25,7 +25,7 @@ def run_sample_analysis():
     
     # Run analysis
     try:
-        matrix = analyzer.create_population_matrix(sample_path, "resources/sample_pop_comparison.csv")
+        matrix = analyzer.create_population_matrix(sample_path, "resources/population_comparison_results.csv")
         print("\nSample analysis completed successfully!")
         print("\nResulting matrix:")
         print(matrix)

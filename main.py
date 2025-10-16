@@ -66,7 +66,7 @@ def display_single_response(response_data, dataframes, search_engine, search_fil
     # Determine analysis type for narrative
     if causal_data['is_causal'] and causal_data['confidence'] > 0.6:
         analysis_type = "causal"
-        analysis_description = "examining the causal relationships between variables"
+        analysis_description = "focusing on the relationships of cause and effect between variables"
     else:
         analysis_type = "descriptive" 
         analysis_description = "exploring descriptive patterns and characteristics"
@@ -101,32 +101,6 @@ def display_single_response(response_data, dataframes, search_engine, search_fil
         result_display.display_low_relevance()
         return
     
-    # Display dataset results and collect dataset IDs
-    dataset_ids_from_results = set()
-    if dataset_results:
-        # Create narrative introduction and numbered list for datasets
-        relevant_datasets_list = []
-        
-        for result in dataset_results:
-            row = result['row']
-            score = result['score']
-            
-            # Skip ACLD for healthcare
-            if not (gpt_data['topic'] == "healthcare" and row["dataset_id"].upper() == "ACLD"):
-                from utils import truncate_description
-                truncated_desc = truncate_description(row['dataset_description'], query_analyzer=query_analyzer, context_type="dataset")
-                dataset_text = f"**{row['dataset_id']} - {row['dataset_name']}**: {truncated_desc}"
-                relevant_datasets_list.append(dataset_text)
-                # Collect dataset ID for linking strategy
-                if row.get('dataset_id'):
-                    dataset_ids_from_results.add(row['dataset_id'])
-        
-        # Display narrative introduction and numbered list
-        if relevant_datasets_list:
-            st.markdown("Here are the PLIDA data assets that might be relevant for your question:")
-            for i, dataset_text in enumerate(relevant_datasets_list, 1):
-                st.markdown(f"{i}. {dataset_text}")
-    
     # Display medical condition suggestion BEFORE variables if detected
     medical_info = gpt_data.get('medical_condition_detected', {})
     if medical_info.get('is_medical', False):
@@ -137,7 +111,10 @@ def display_single_response(response_data, dataframes, search_engine, search_fil
             query_analyzer
         )
     
-    # Process variables based on whether query is causal
+    # Show loading indicator while collecting datasets and variables
+    loading_container = ui.display_loading_indicator()
+    
+    # Process variables based on whether query is causal and collect all dataset IDs
     variables = gpt_data['variables']
     all_dataset_ids = []
     
@@ -150,16 +127,16 @@ def display_single_response(response_data, dataframes, search_engine, search_fil
             gpt_data['topic']
         )
         
-        # Display categorized variables with dataset prioritization
-        variable_dataset_ids = result_display.display_causal_variables(
+        # Collect datasets from variables WITHOUT displaying them yet
+        variable_dataset_ids = result_display.collect_variable_datasets(
             categorized,
             search_engine,
             search_filters,
             gpt_data['topic'],
-            ui,
             relevant_datasets,
             user_input,
-            query_analyzer
+            query_analyzer,
+            analysis_type="causal"
         )
         if variable_dataset_ids:
             all_dataset_ids.extend(variable_dataset_ids)
@@ -173,22 +150,30 @@ def display_single_response(response_data, dataframes, search_engine, search_fil
             gpt_data['topic']
         )
         
-        # Display categorized variables for descriptive analysis with dataset prioritization
-        variable_dataset_ids = result_display.display_descriptive_variables(
+        # Collect datasets from variables WITHOUT displaying them yet
+        variable_dataset_ids = result_display.collect_variable_datasets(
             categorized,
             search_engine,
             search_filters,
             gpt_data['topic'],
-            ui,
             relevant_datasets,
             user_input,
-            query_analyzer
+            query_analyzer,
+            analysis_type="descriptive"
         )
         if variable_dataset_ids:
             all_dataset_ids.extend(variable_dataset_ids)
     
+    # Now collect all datasets from both initial search and variables
+    dataset_ids_from_results = set()
+    if dataset_results:
+        for result in dataset_results:
+            row = result['row']
+            # Skip ACLD for healthcare
+            if not (gpt_data['topic'] == "healthcare" and row["dataset_id"].upper() == "ACLD"):
+                if row.get('dataset_id'):
+                    dataset_ids_from_results.add(row['dataset_id'])
     
-    # Display single linking strategy at the very end for all datasets mentioned
     # Combine dataset IDs from results and variables
     all_combined_dataset_ids = list(dataset_ids_from_results)
     if all_dataset_ids:
@@ -199,10 +184,26 @@ def display_single_response(response_data, dataframes, search_engine, search_fil
             else:
                 all_combined_dataset_ids.append(dataset_id_set)
     
-    # Remove duplicates and display linking strategy if any datasets found
+    # Remove duplicates for unified dataset list
     unique_dataset_ids = list(set(all_combined_dataset_ids))
-    if unique_dataset_ids:
-        result_display.check_and_display_linking_strategy([set(unique_dataset_ids)])
+    
+    # Display combined datasets and variables
+    if dataset_results or unique_dataset_ids:
+        result_display.display_datasets_and_variables(
+            dataset_results,
+            categorized if 'categorized' in locals() else None,
+            search_engine,
+            search_filters,
+            gpt_data['topic'],
+            ui,
+            relevant_datasets,
+            user_input,
+            query_analyzer,
+            causal_data,
+            unique_dataset_ids,
+            dataframes,
+            loading_container  # Pass loading container to clear it when display starts
+        )
     
     # Display execution time
     execution_time = timestamp - start_time

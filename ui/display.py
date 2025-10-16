@@ -1,4 +1,5 @@
 import streamlit as st
+import re
 from .components import UIComponents
 from utils import truncate_description
 from config.topics import TOPIC_QUERIES
@@ -204,6 +205,12 @@ class ResultDisplay:
         if var_desc_lower.strip() in ['state', 'state of residence']:
             return True
             
+        # Also check for any variable description that contains 'state' as a key concept
+        # This catches cases like "state (demography)" or "state information"
+        if re.search(r'\bstate\b', var_desc_lower) and len(var_desc_lower.split()) <= 3:
+            # Simple state-related variable descriptions should use CORE
+            return True
+            
         return False
     
     def _search_core_only_variable(self, search_query, search_engine):
@@ -268,6 +275,13 @@ class ResultDisplay:
                     score += 15  # Boost exact state match
                 elif 'gender' in query_lower and 'gender' in variable_name:
                     score += 15  # Boost gender matches
+                
+                # Enhanced state matching - catch various state-related queries
+                if 'state' in query_lower:
+                    if variable_name in ['state', 'state_asgs_2021', 'state_abbreviation']:
+                        score += 10  # Strong boost for any state variable
+                    elif 'state' in variable_name or 'state' in description:
+                        score += 5   # Moderate boost for state-related variables
                 
                 # Special handling for age-related queries
                 if 'age' in query_lower:
@@ -401,6 +415,7 @@ class ResultDisplay:
             ]['dataset_id'].unique().tolist()
             
             if synthetic_datasets:
+                st.markdown("## Linkage")
                 st.markdown("The real strength of PLIDA is the **capacity to link many data assets together**. Let's see which of the identified datasets could be linked.")
                 
                 st.write(
@@ -442,6 +457,271 @@ class ResultDisplay:
                     st.write(medical_info['raw_response'])
         
     
+    def collect_variable_datasets(self, categorized, search_engine, search_filters, topic, relevant_datasets=None, user_input=None, query_analyzer=None, analysis_type="causal"):
+        """Collect dataset IDs from variables without displaying them.
+        
+        Args:
+            categorized: Categorized variables
+            search_engine: Search engine instance
+            search_filters: Search filters instance
+            topic: Current topic
+            relevant_datasets: List of selected dataset names to prioritize
+            user_input: Original user input
+            query_analyzer: Query analyzer instance
+            analysis_type: Type of analysis ("causal" or "descriptive")
+        
+        Returns:
+            List of dataset ID sets
+        """
+        all_dataset_ids = []
+        
+        if analysis_type == "causal":
+            # Process causal variables
+            for category in ['causal_variables', 'outcome_variables', 'control_variables']:
+                if categorized.get(category):
+                    dataset_ids = self._collect_variable_section_datasets(
+                        categorized[category],
+                        search_engine,
+                        search_filters,
+                        topic,
+                        relevant_datasets,
+                        user_input,
+                        query_analyzer
+                    )
+                    if dataset_ids:
+                        all_dataset_ids.extend(dataset_ids)
+        else:
+            # Process descriptive variables
+            for category in ['main_variables', 'subgroups']:
+                if categorized.get(category):
+                    dataset_ids = self._collect_variable_section_datasets(
+                        categorized[category],
+                        search_engine,
+                        search_filters,
+                        topic,
+                        relevant_datasets,
+                        user_input,
+                        query_analyzer
+                    )
+                    if dataset_ids:
+                        all_dataset_ids.extend(dataset_ids)
+        
+        return all_dataset_ids
+    
+    def _collect_variable_section_datasets(self, variables, search_engine, search_filters, topic, relevant_datasets=None, user_input=None, query_analyzer=None):
+        """Collect dataset IDs from a section of variables without displaying.
+        
+        Returns:
+            List of dataset ID sets
+        """
+        all_dataset_ids = []
+        
+        for var_desc in variables:
+            # Determine appropriate index
+            index_name, dataset_note, additional_searches = search_filters.get_appropriate_index(
+                var_desc, topic
+            )
+            
+            # Enhance query for employment variables
+            search_query = var_desc
+            if search_filters.is_employment_variable(var_desc):
+                search_query += " jobseeker"
+            
+            # Enhance query for location variables (but not for simple state queries)
+            if self._is_location_variable(var_desc) and not re.search(r'\bstate\b', var_desc.lower()):
+                search_query += " SA1 SA2 SA3 SA4"
+            
+            # Check if this is a core demographic variable that should only search CORE datasets
+            if self._is_core_only_variable(var_desc):
+                # For demographic variables, search only CORE datasets
+                var_results = self._search_core_only_variable(search_query, search_engine)
+            else:
+                # For other variables, use enhanced search with query expansion
+                var_results = search_engine.search_variables(
+                    search_query, 
+                    index_name, 
+                    boost_datasets=relevant_datasets,
+                    topic=topic,
+                    use_expansion=True,
+                    use_openai_relevance=True,
+                    conceptual_variable=var_desc
+                )
+                var_results = search_engine.deduplicate_results(var_results)
+            
+            # Apply population filtering if available
+            if user_input and query_analyzer and var_results:
+                var_results = query_analyzer.check_population_match(var_desc, var_results, search_engine)
+            
+            # Collect dataset IDs from results
+            if var_results:
+                dataset_ids = self._extract_dataset_ids_from_results(var_results)
+                if dataset_ids:
+                    all_dataset_ids.append(dataset_ids)
+            
+            # Perform additional searches for employment variables
+            for additional in additional_searches:
+                enhanced_query = var_desc + additional['query_suffix']
+                add_results = search_engine.search_variables(
+                    enhanced_query, 
+                    additional['index'], 
+                    boost_datasets=relevant_datasets,
+                    topic=topic,
+                    use_expansion=True,
+                    use_openai_relevance=True,
+                    conceptual_variable=enhanced_query
+                )
+                add_results = search_engine.deduplicate_results(add_results)
+                
+                # Apply population filtering to additional results
+                if user_input and query_analyzer and add_results:
+                    add_results = query_analyzer.check_population_match(enhanced_query, add_results, search_engine)
+                
+                if add_results:
+                    dataset_ids = self._extract_dataset_ids_from_results(add_results)
+                    if dataset_ids:
+                        all_dataset_ids.append(dataset_ids)
+        
+        return all_dataset_ids
+    
+    def _extract_dataset_ids_from_results(self, search_results):
+        """Extract dataset IDs from search results.
+        
+        Args:
+            search_results: List of search result dictionaries
+            
+        Returns:
+            Set of dataset IDs
+        """
+        # Deduplicate search results based on dataset, variable name, and description
+        search_results = self._deduplicate_variable_results(search_results)
+        
+        # Filter results by OpenAI relevance score (only show variables with >51% relevance)
+        search_results = self._filter_by_relevance_score(search_results, min_threshold=0.51)
+        
+        # Collect all dataset IDs from results
+        dataset_ids = set()
+        for result in search_results:
+            dataset_id = result['row'].get('dataset_id', '')
+            if dataset_id:
+                dataset_ids.add(dataset_id)
+        
+        return dataset_ids
+    
+    def display_datasets_and_variables(self, dataset_results, categorized, search_engine, search_filters, topic, ui, relevant_datasets, user_input, query_analyzer, causal_data, unique_dataset_ids, dataframes, loading_container=None):
+        """Display datasets and variables together in a unified interface.
+        
+        Args:
+            dataset_results: Initial dataset search results
+            categorized: Categorized variables
+            search_engine: Search engine instance
+            search_filters: Search filters instance
+            topic: Current topic
+            ui: UI components instance
+            relevant_datasets: List of selected dataset names
+            user_input: Original user input
+            query_analyzer: Query analyzer instance
+            causal_data: Causal analysis data
+            unique_dataset_ids: All unique dataset IDs found
+            dataframes: DataFrame collection
+            loading_container: Loading indicator container to clear when display starts
+        """
+        # First display all datasets found
+        if dataset_results or unique_dataset_ids:
+            self._display_unified_datasets(dataset_results, unique_dataset_ids, dataframes, query_analyzer, topic, loading_container)
+        
+        # Then display variables
+        if categorized:
+            if causal_data['is_causal'] and causal_data['confidence'] > 0.6:
+                # Display causal variables
+                variable_dataset_ids = self.display_causal_variables(
+                    categorized,
+                    search_engine,
+                    search_filters,
+                    topic,
+                    ui,
+                    relevant_datasets,
+                    user_input,
+                    query_analyzer
+                )
+            else:
+                # Display descriptive variables
+                variable_dataset_ids = self.display_descriptive_variables(
+                    categorized,
+                    search_engine,
+                    search_filters,
+                    topic,
+                    ui,
+                    relevant_datasets,
+                    user_input,
+                    query_analyzer
+                )
+        
+        # Display linking strategy at the end
+        if unique_dataset_ids:
+            self.check_and_display_linking_strategy([set(unique_dataset_ids)])
+    
+    def _display_unified_datasets(self, dataset_results, unique_dataset_ids, dataframes, query_analyzer, topic, loading_container=None):
+        """Display unified list of datasets from both search results and variables.
+        
+        Args:
+            dataset_results: Initial dataset search results
+            unique_dataset_ids: All unique dataset IDs found
+            dataframes: DataFrame collection
+            query_analyzer: Query analyzer instance
+            topic: Current topic
+            loading_container: Loading indicator container to clear when display starts
+        """
+        # Clear loading indicator immediately before displaying first content
+        if loading_container is not None:
+            loading_container.empty()
+        
+        # Create a comprehensive list of datasets
+        dataset_info_list = []
+        
+        # Add datasets from initial search results
+        if dataset_results:
+            for result in dataset_results:
+                row = result['row']
+                # Skip ACLD for healthcare
+                if not (topic == "healthcare" and row["dataset_id"].upper() == "ACLD"):
+                    from utils import truncate_description
+                    truncated_desc = truncate_description(row['dataset_description'], query_analyzer=query_analyzer, context_type="dataset")
+                    dataset_info = {
+                        'id': row['dataset_id'],
+                        'name': row['dataset_name'],
+                        'description': truncated_desc,
+                        'source': 'search'
+                    }
+                    dataset_info_list.append(dataset_info)
+        
+        # Add datasets from variables that weren't already included
+        included_ids = {info['id'] for info in dataset_info_list}
+        for dataset_id in unique_dataset_ids:
+            if dataset_id not in included_ids:
+                # Look up dataset info from dataframes
+                dataset_row = dataframes['datasets'][dataframes['datasets']['dataset_id'] == dataset_id]
+                if not dataset_row.empty:
+                    row = dataset_row.iloc[0]
+                    # Skip ACLD for healthcare
+                    if not (topic == "healthcare" and dataset_id.upper() == "ACLD"):
+                        from utils import truncate_description
+                        truncated_desc = truncate_description(row['dataset_description'], query_analyzer=query_analyzer, context_type="dataset")
+                        dataset_info = {
+                            'id': dataset_id,
+                            'name': row['dataset_name'],
+                            'description': truncated_desc,
+                            'source': 'variables'
+                        }
+                        dataset_info_list.append(dataset_info)
+        
+        # Display the unified dataset list
+        if dataset_info_list:
+            st.markdown("---")
+            st.markdown("Here are the PLIDA data assets that might be relevant for your question:")
+            for i, dataset_info in enumerate(dataset_info_list, 1):
+                dataset_text = f"**{dataset_info['id']} - {dataset_info['name']}**: {dataset_info['description']}"
+                st.markdown(f"{i}. {dataset_text}")
+
     def display_causal_variables(self, categorized, search_engine, search_filters, topic, ui, relevant_datasets=None, user_input=None, query_analyzer=None):
         """Display variables categorized for causal analysis.
         
@@ -462,6 +742,7 @@ class ResultDisplay:
         
         # Display Potential Causal Variables
         if categorized['causal_variables']:
+            st.markdown("## Treatment Variables")
             st.markdown("We will start with potential treatment variables. These are variables that might cause or influence the outcome you're interested in:")
             dataset_ids, current_number = self._display_variable_section(
                 categorized['causal_variables'], 
@@ -480,6 +761,7 @@ class ResultDisplay:
         
         # Display Outcome Variables
         if categorized['outcome_variables']:
+            st.markdown("## Outcome Variables")
             st.markdown("Next, let's look at outcome variables. These are the variables being affected or measured as results:")
             dataset_ids, current_number = self._display_variable_section(
                 categorized['outcome_variables'], 
@@ -498,6 +780,7 @@ class ResultDisplay:
         
         # Display Control Variables
         if categorized['control_variables']:
+            st.markdown("## Control Variables")
             st.markdown("Finally, we should consider control variables. These are variables that need to be controlled for valid causal inference:")
             dataset_ids, current_number = self._display_variable_section(
                 categorized['control_variables'], 
@@ -552,8 +835,8 @@ class ResultDisplay:
                 if search_filters.is_employment_variable(var_desc):
                     search_query += " jobseeker"
                 
-                # Enhance query for location variables
-                if self._is_location_variable(var_desc):
+                # Enhance query for location variables (but not for simple state queries)
+                if self._is_location_variable(var_desc) and not re.search(r'\bstate\b', var_desc.lower()):
                     search_query += " SA1 SA2 SA3 SA4"
                 
                 # Check if this is a core demographic variable that should only search CORE datasets
@@ -643,6 +926,7 @@ class ResultDisplay:
         
         # Display Main Variables
         if categorized['main_variables']:
+            st.markdown("## Main Variables")
             st.markdown("We'll start with the main variables. These are the primary variables that directly address your research question:")
             dataset_ids, current_number = self._display_variable_section(
                 categorized['main_variables'],
@@ -661,6 +945,7 @@ class ResultDisplay:
         
         # Display Subgroups
         if categorized['subgroups']:
+            st.markdown("## Subgroup Variables")
             st.markdown("Next, let's consider subgroup variables. These are useful for breaking down or segmenting your analysis:")
             dataset_ids, current_number = self._display_variable_section(
                 categorized['subgroups'],

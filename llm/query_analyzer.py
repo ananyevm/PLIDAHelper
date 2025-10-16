@@ -419,15 +419,17 @@ class QueryAnalyzer:
             "- NEVER use hierarchical terms like 'household head', 'head of household', 'family head' or similar. Instead use inclusive language like 'adults in household', 'primary earner', 'main income provider', or 'household members'. "
             "- Use person-first, inclusive language that doesn't assume family hierarchies. "
             "- DO NOT include indigenous information or variables UNLESS the user query explicitly mentions indigenous people, Aboriginal people, Torres Strait Islander people, First Nations, or asks specifically about indigenous topics. When the user DOES explicitly mention these groups, then DO include indigenous identity variables as they are essential for the analysis. "
-            "- DO NOT include location or geographic variables (e.g., location, state, geography, area, region) UNLESS the user query explicitly mentions location, geography, state, area, region, or other geographic terms. Only include location variables when the user specifically asks about geographic analysis or location-based research. "
+            "- ALWAYS include location or geographic variables when the user query explicitly mentions them. For example, if the query mentions 'state', 'geography', 'location', 'area', 'region', 'suburb', 'postcode', or any geographic terms, include the relevant geographic variable. Common geographic variables include 'state', 'region', 'area', 'location'. DO NOT include geographic variables only when the query has no geographic component at all. "
             "For demographic variables (e.g., age, sex, gender, year of birth), "
             "append '(demography)' to the description. "
             "For higher education variables (e.g., university degree, tertiary qualification, bachelor, master, phd, postgraduate, undergraduate, academic qualification), "
             "append '(highered)' to the description. "
             "For employment-related variables (e.g., employment, unemployment, jobseeker, labor market, workforce, job type, occupation, retrenchment), "
             "append '(employment)' to the description. "
-            "Return a valid JSON object with 'reformulated_question' (string), 'relevance_score' (int), 'topic' (string), and 'variables' (list of strings), e.g., "
-            "{'reformulated_question': 'What is the relationship between university degree attainment and unemployment rates among different age groups in Australia?', 'relevance_score': 8, 'topic': 'unemployment', 'variables': ['Age of respondent (demography)', 'Employment (employment)', 'University degree attainment (highered)']}."
+            "Return a valid JSON object with 'reformulated_question' (string), 'relevance_score' (int), 'topic' (string), and 'variables' (list of strings). "
+            "Examples: "
+            "{'reformulated_question': 'What is the relationship between university degree attainment and unemployment rates among different age groups in Australia?', 'relevance_score': 8, 'topic': 'unemployment', 'variables': ['Age of respondent (demography)', 'Employment (employment)', 'University degree attainment (highered)']} "
+            "{'reformulated_question': 'How do poverty rates vary across different states in Australia?', 'relevance_score': 9, 'topic': 'poverty', 'variables': ['Income level', 'State', 'Age of respondent (demography)', 'Employment (employment)', 'Educational attainment']}"
         )
     
     def _build_medical_detection_prompt(self, user_input):

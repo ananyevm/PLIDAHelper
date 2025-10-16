@@ -85,8 +85,61 @@ class ResultDisplay:
             self.ui.stream_text(updated_list_container, 
                               "\n".join([f"- {name}" for name in relevant_datasets]))
     
-    def display_variable_results(self, variable_desc, index, search_results, dataset_note, query_analyzer=None):
+    def substitute_acld_variables_with_census(self, search_results, is_longitudinal):
+        """Substitute ACLD variables with CENSUS equivalents when longitudinal analysis is not needed."""
+        if is_longitudinal:
+            return search_results  # Keep ACLD for longitudinal analysis
+        
+        substituted_results = []
+        for result in search_results:
+            row = result['row']
+            if row.get('dataset_id', '').upper() == 'ACLD':
+                # Create CENSUS equivalent
+                census_result = {
+                    'score': result['score'],
+                    'row': {
+                        'dataset_id': 'CENSUS',
+                        'dataset': 'Census of Population and Housing 2011',
+                        'variable_name': row.get('variable_name', ''),
+                        'description': row.get('description', '')
+                    }
+                }
+                # Copy other fields if they exist
+                for key in ['openai_relevance', 'relevance_explanation', 'population_match', 'is_core_alternative']:
+                    if key in result:
+                        census_result[key] = result[key]
+                substituted_results.append(census_result)
+            else:
+                substituted_results.append(result)
+        
+        return substituted_results
+
+    def _substitute_acld_datasets_in_results(self, dataset_results):
+        """Substitute ACLD datasets with CENSUS in the results list."""
+        substituted_results = []
+        for result in dataset_results:
+            row = result['row']
+            if row.get('dataset_id', '').upper() == 'ACLD':
+                # Create CENSUS equivalent
+                census_result = {
+                    'score': result['score'],
+                    'row': {
+                        'dataset_id': 'CENSUS',
+                        'dataset_name': 'Census of Population and Housing 2011',
+                        'dataset_description': 'Complete population coverage from the 2011 Census, providing comprehensive demographic and socio-economic information.'
+                    }
+                }
+                substituted_results.append(census_result)
+            else:
+                substituted_results.append(result)
+        
+        return substituted_results
+
+    def display_variable_results(self, variable_desc, index, search_results, dataset_note, query_analyzer=None, is_longitudinal=False, available_datasets=None):
         """Display variable search results."""
+        
+        # Apply ACLD to CENSUS substitution if not longitudinal
+        search_results = self.substitute_acld_variables_with_census(search_results, is_longitudinal)
         
         # Deduplicate search results based on dataset, variable name, and description
         search_results = self._deduplicate_variable_results(search_results)
@@ -115,12 +168,40 @@ class ResultDisplay:
             for result in core_alternatives:
                 self._display_single_variable_result(result, is_core_alternative=True, query_analyzer=query_analyzer)
         
-        # If no variables met the relevance threshold, show a message
+        # If no variables met the relevance threshold, try to recommend datasets
         if not regular_results and not core_alternatives:
-            no_results_container = st.empty()
-            self.ui.stream_text(no_results_container, 
-                "We could not locate variables matching this description. However, the information we have access to is limited. "
-                "Please refer to the documentation of the datasets listed above—it's possible you'll find what you're looking for there.")
+            if query_analyzer and available_datasets:
+                # Get dataset recommendations from OpenAI
+                recommendation = query_analyzer.recommend_datasets_for_conceptual_variable(
+                    variable_desc, available_datasets
+                )
+                
+                if recommendation['recommended_datasets']:
+                    # Display dataset recommendations
+                    st.markdown(f"**We recommend referring to the documentation of these datasets for '{variable_desc}':**")
+                    
+                    for dataset_id in recommendation['recommended_datasets']:
+                        # Find the dataset info
+                        dataset_info = next((ds for ds in available_datasets if ds.get('dataset_id') == dataset_id), None)
+                        if dataset_info:
+                            dataset_name = dataset_info.get('dataset_name', 'Unknown')
+                            st.write(f"• **{dataset_id}**: {dataset_name}")
+                    
+                    # Add reasoning if provided
+                    if recommendation['reasoning']:
+                        st.caption(f"*{recommendation['reasoning']}*")
+                else:
+                    # Fallback to original message
+                    no_results_container = st.empty()
+                    self.ui.stream_text(no_results_container, 
+                        "We could not locate variables matching this description. However, the information we have access to is limited. "
+                        "Please refer to the documentation of the datasets listed above—it's possible you'll find what you're looking for there.")
+            else:
+                # Fallback to original message when no query_analyzer or datasets available
+                no_results_container = st.empty()
+                self.ui.stream_text(no_results_container, 
+                    "We could not locate variables matching this description. However, the information we have access to is limited. "
+                    "Please refer to the documentation of the datasets listed above—it's possible you'll find what you're looking for there.")
         
         return dataset_ids
     
@@ -318,7 +399,8 @@ class ResultDisplay:
                     results.append(result)
             
             # Sort by score and deduplicate manually for CORE results
-            results = sorted(results, key=lambda x: x['score'], reverse=True)
+            # Use variable_name as secondary sort key for deterministic ordering in case of ties
+            results = sorted(results, key=lambda x: (x['score'], x['row'].get('variable_name', '')), reverse=True)
             
             # Manual deduplication for CORE results (ignore dataset year differences)
             seen = set()
@@ -369,7 +451,7 @@ class ResultDisplay:
             # Only show warnings - no positive confirmations
         
         match_text = (
-            f"- **Dataset:** {row['dataset']} | "
+            f"- **Dataset:** {row.get('dataset_id', 'Unknown')} - {row['dataset']} | "
             f"**Variable:** {row['variable_name']} | "
             f"**Description:** {truncated_desc}{population_warning}"
         )
@@ -389,7 +471,7 @@ class ResultDisplay:
                 )
                 st.caption("ACLD provides longitudinal linkage but covers only a 5% sample of the population, while the full Census provides complete population coverage for cross-sectional analysis.")
     
-    def check_and_display_linking_strategy(self, dataset_ids_collection):
+    def check_and_display_linking_strategy(self, dataset_ids_collection, is_longitudinal=False):
         """Check for SYNTHETIC_AEUID in datasets and display linking strategy."""
         import pandas as pd
         
@@ -400,6 +482,12 @@ class ResultDisplay:
         all_dataset_ids = set()
         for dataset_ids in dataset_ids_collection:
             all_dataset_ids.update(dataset_ids)
+        
+        # Apply ACLD to CENSUS substitution if not longitudinal
+        if not is_longitudinal:
+            if 'ACLD' in all_dataset_ids:
+                all_dataset_ids.remove('ACLD')
+                all_dataset_ids.add('CENSUS')
         
         if not all_dataset_ids:
             return
@@ -607,7 +695,7 @@ class ResultDisplay:
         
         return dataset_ids
     
-    def display_datasets_and_variables(self, dataset_results, categorized, search_engine, search_filters, topic, ui, relevant_datasets, user_input, query_analyzer, causal_data, unique_dataset_ids, dataframes, loading_container=None):
+    def display_datasets_and_variables(self, dataset_results, categorized, search_engine, search_filters, topic, ui, relevant_datasets, user_input, query_analyzer, causal_data, unique_dataset_ids, dataframes, loading_container=None, is_longitudinal=False):
         """Display datasets and variables together in a unified interface.
         
         Args:
@@ -627,7 +715,7 @@ class ResultDisplay:
         """
         # First display all datasets found
         if dataset_results or unique_dataset_ids:
-            self._display_unified_datasets(dataset_results, unique_dataset_ids, dataframes, query_analyzer, topic, loading_container)
+            self._display_unified_datasets(dataset_results, unique_dataset_ids, dataframes, query_analyzer, topic, loading_container, is_longitudinal)
         
         # Then display variables
         if categorized:
@@ -641,7 +729,9 @@ class ResultDisplay:
                     ui,
                     relevant_datasets,
                     user_input,
-                    query_analyzer
+                    query_analyzer,
+                    is_longitudinal,
+                    dataframes
                 )
             else:
                 # Display descriptive variables
@@ -653,14 +743,16 @@ class ResultDisplay:
                     ui,
                     relevant_datasets,
                     user_input,
-                    query_analyzer
+                    query_analyzer,
+                    is_longitudinal,
+                    dataframes
                 )
         
         # Display linking strategy at the end
         if unique_dataset_ids:
-            self.check_and_display_linking_strategy([set(unique_dataset_ids)])
+            self.check_and_display_linking_strategy([set(unique_dataset_ids)], is_longitudinal)
     
-    def _display_unified_datasets(self, dataset_results, unique_dataset_ids, dataframes, query_analyzer, topic, loading_container=None):
+    def _display_unified_datasets(self, dataset_results, unique_dataset_ids, dataframes, query_analyzer, topic, loading_container=None, is_longitudinal=False):
         """Display unified list of datasets from both search results and variables.
         
         Args:
@@ -670,10 +762,13 @@ class ResultDisplay:
             query_analyzer: Query analyzer instance
             topic: Current topic
             loading_container: Loading indicator container to clear when display starts
+            is_longitudinal: Whether the query requires longitudinal data
         """
         # Clear loading indicator immediately before displaying first content
         if loading_container is not None:
             loading_container.empty()
+        
+        # Note: ACLD to CENSUS substitution should already be done in main.py before this point
         
         # Create a comprehensive list of datasets
         dataset_info_list = []
@@ -698,21 +793,35 @@ class ResultDisplay:
         included_ids = {info['id'] for info in dataset_info_list}
         for dataset_id in unique_dataset_ids:
             if dataset_id not in included_ids:
-                # Look up dataset info from dataframes
-                dataset_row = dataframes['datasets'][dataframes['datasets']['dataset_id'] == dataset_id]
-                if not dataset_row.empty:
-                    row = dataset_row.iloc[0]
-                    # Skip ACLD for healthcare
-                    if not (topic == "healthcare" and dataset_id.upper() == "ACLD"):
-                        from utils import truncate_description
-                        truncated_desc = truncate_description(row['dataset_description'], query_analyzer=query_analyzer, context_type="dataset")
-                        dataset_info = {
-                            'id': dataset_id,
-                            'name': row['dataset_name'],
-                            'description': truncated_desc,
-                            'source': 'variables'
-                        }
+                # Apply ACLD to CENSUS substitution for variable-derived datasets
+                if dataset_id.upper() == 'ACLD' and not is_longitudinal:
+                    # Substitute ACLD with CENSUS
+                    dataset_info = {
+                        'id': 'CENSUS',
+                        'name': 'Census of Population and Housing 2011',
+                        'description': 'Complete population coverage from the 2011 Census, providing comprehensive demographic and socio-economic information.',
+                        'source': 'variables'
+                    }
+                    # Only add if CENSUS not already included
+                    if 'CENSUS' not in included_ids:
                         dataset_info_list.append(dataset_info)
+                        included_ids.add('CENSUS')
+                else:
+                    # Look up dataset info from dataframes
+                    dataset_row = dataframes['datasets'][dataframes['datasets']['dataset_id'] == dataset_id]
+                    if not dataset_row.empty:
+                        row = dataset_row.iloc[0]
+                        # Skip ACLD for healthcare
+                        if not (topic == "healthcare" and dataset_id.upper() == "ACLD"):
+                            from utils import truncate_description
+                            truncated_desc = truncate_description(row['dataset_description'], query_analyzer=query_analyzer, context_type="dataset")
+                            dataset_info = {
+                                'id': dataset_id,
+                                'name': row['dataset_name'],
+                                'description': truncated_desc,
+                                'source': 'variables'
+                            }
+                            dataset_info_list.append(dataset_info)
         
         # Display the unified dataset list
         if dataset_info_list:
@@ -722,7 +831,7 @@ class ResultDisplay:
                 dataset_text = f"**{dataset_info['id']} - {dataset_info['name']}**: {dataset_info['description']}"
                 st.markdown(f"{i}. {dataset_text}")
 
-    def display_causal_variables(self, categorized, search_engine, search_filters, topic, ui, relevant_datasets=None, user_input=None, query_analyzer=None):
+    def display_causal_variables(self, categorized, search_engine, search_filters, topic, ui, relevant_datasets=None, user_input=None, query_analyzer=None, is_longitudinal=False, dataframes=None):
         """Display variables categorized for causal analysis.
         
         Args:
@@ -736,6 +845,16 @@ class ResultDisplay:
         # Show dataset context if relevant datasets exist
         all_dataset_ids = []
         current_number = 1
+        
+        # Create available_datasets list from dataframes for dataset recommendations
+        available_datasets = []
+        if dataframes and 'datasets' in dataframes:
+            for _, row in dataframes['datasets'].iterrows():
+                available_datasets.append({
+                    'dataset_id': row.get('dataset_id', ''),
+                    'dataset_name': row.get('dataset_name', ''),
+                    'dataset_description': row.get('dataset_description', '')
+                })
         
         # Start with narrative introduction
         st.markdown("Now let's try to identify specific variables in the PLIDA datasets which you might find useful for your causal analysis.")
@@ -754,7 +873,9 @@ class ResultDisplay:
                 relevant_datasets,
                 user_input,
                 query_analyzer,
-                current_number
+                current_number,
+                is_longitudinal,
+                available_datasets
             )
             if dataset_ids:
                 all_dataset_ids.extend(dataset_ids)
@@ -773,7 +894,9 @@ class ResultDisplay:
                 relevant_datasets,
                 user_input,
                 query_analyzer,
-                current_number
+                current_number,
+                is_longitudinal,
+                available_datasets
             )
             if dataset_ids:
                 all_dataset_ids.extend(dataset_ids)
@@ -792,14 +915,16 @@ class ResultDisplay:
                 relevant_datasets,
                 user_input,
                 query_analyzer,
-                current_number
+                current_number,
+                is_longitudinal,
+                available_datasets
             )
             if dataset_ids:
                 all_dataset_ids.extend(dataset_ids)
         
         return all_dataset_ids
     
-    def _display_variable_section(self, variables, search_engine, search_filters, topic, ui, category, relevant_datasets=None, user_input=None, query_analyzer=None, start_number=1):
+    def _display_variable_section(self, variables, search_engine, search_filters, topic, ui, category, relevant_datasets=None, user_input=None, query_analyzer=None, start_number=1, is_longitudinal=False, available_datasets=None):
         """Display a section of categorized variables.
         
         Args:
@@ -863,7 +988,7 @@ class ResultDisplay:
                 
                 # Display results and collect dataset IDs
                 if var_results:
-                    dataset_ids = self.display_variable_results(var_desc, i, var_results, dataset_note, query_analyzer)
+                    dataset_ids = self.display_variable_results(var_desc, i, var_results, dataset_note, query_analyzer, is_longitudinal, available_datasets)
                     if dataset_ids:
                         all_dataset_ids.append(dataset_ids)
                 # If no results, continue silently
@@ -889,7 +1014,7 @@ class ResultDisplay:
                     
                     if add_results:
                         dataset_ids = self.display_variable_results(
-                            var_desc, i, add_results, additional['note'], query_analyzer
+                            var_desc, i, add_results, additional['note'], query_analyzer, is_longitudinal, available_datasets
                         )
                         if dataset_ids:
                             all_dataset_ids.append(dataset_ids)
@@ -906,7 +1031,7 @@ class ResultDisplay:
         # Linking strategy will be displayed once at the end of the entire response
         return all_dataset_ids, next_number
     
-    def display_descriptive_variables(self, categorized, search_engine, search_filters, topic, ui, relevant_datasets=None, user_input=None, query_analyzer=None):
+    def display_descriptive_variables(self, categorized, search_engine, search_filters, topic, ui, relevant_datasets=None, user_input=None, query_analyzer=None, is_longitudinal=False, dataframes=None):
         """Display variables categorized for descriptive analysis.
         
         Args:
@@ -920,6 +1045,16 @@ class ResultDisplay:
         # Show dataset context if relevant datasets exist
         all_dataset_ids = []
         current_number = 1
+        
+        # Create available_datasets list from dataframes for dataset recommendations
+        available_datasets = []
+        if dataframes and 'datasets' in dataframes:
+            for _, row in dataframes['datasets'].iterrows():
+                available_datasets.append({
+                    'dataset_id': row.get('dataset_id', ''),
+                    'dataset_name': row.get('dataset_name', ''),
+                    'dataset_description': row.get('dataset_description', '')
+                })
         
         # Start with narrative introduction
         st.markdown("Now let's try to identify specific variables in the PLIDA datasets which you might find useful for your descriptive analysis.")
@@ -938,7 +1073,9 @@ class ResultDisplay:
                 relevant_datasets,
                 user_input,
                 query_analyzer,
-                current_number
+                current_number,
+                is_longitudinal,
+                available_datasets
             )
             if dataset_ids:
                 all_dataset_ids.extend(dataset_ids)
@@ -957,7 +1094,9 @@ class ResultDisplay:
                 relevant_datasets,
                 user_input,
                 query_analyzer,
-                current_number
+                current_number,
+                is_longitudinal,
+                available_datasets
             )
             if dataset_ids:
                 all_dataset_ids.extend(dataset_ids)
@@ -1094,7 +1233,7 @@ class ResultDisplay:
                         # Create earnings variable display
                         earnings_text = (
                             f"**Variable:** {row.get('variable_name', 'Unknown')} | "
-                            f"**Dataset:** PIT_ITR (Income Tax Return) | "
+                            f"**Dataset:** {row.get('dataset_id', 'PIT_ITR')} - PIT_ITR (Income Tax Return) | "
                             f"**Description:** {row.get('description', 'No description')}"
                         )
                         

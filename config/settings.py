@@ -12,6 +12,19 @@ np.random.seed(SEED)
 torch.manual_seed(SEED)
 torch.cuda.manual_seed_all(SEED)
 
+# Set deterministic behavior for PyTorch
+torch.backends.cudnn.deterministic = True
+torch.backends.cudnn.benchmark = False
+
+# Set random seed for Python's built-in random module
+import random
+random.seed(SEED)
+
+# Set Python hash seed for deterministic dict/set ordering
+import os
+if 'PYTHONHASHSEED' not in os.environ:
+    os.environ['PYTHONHASHSEED'] = str(SEED)
+
 # API Configuration
 def load_openai_api_key():
     """Load OpenAI API key from various sources."""

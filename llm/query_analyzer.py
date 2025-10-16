@@ -396,7 +396,8 @@ class QueryAnalyzer:
                     results.append(result)
             
             # Sort by score and return top results
-            results = sorted(results, key=lambda x: x['score'], reverse=True)
+            # Use variable_name as secondary sort key for deterministic ordering in case of ties
+            results = sorted(results, key=lambda x: (x['score'], x['row'].get('variable_name', '')), reverse=True)
             top_results = results[:3]
             
             # Return results directly without status messages
@@ -410,7 +411,7 @@ class QueryAnalyzer:
         """Build the prompt for query analysis."""
         return (
             f"For the question: '{user_input}'\n"
-            "1. **First, reformulate the question** to make it clearer, more specific, and research-focused. The reformulated question should be well-structured and precise. IMPORTANT: Only reformulate the single question - do NOT add additional questions or sub-questions.\n"
+            "1. **First, reformulate the question** to make it clearer and more precise while staying faithful to the original intent. Do NOT add new concepts, variables, or analysis dimensions that were not explicitly mentioned in the original question. Do NOT add demographic breakdowns or subgroup analysis unless specifically requested. IMPORTANT: Only reformulate the single question - do NOT add additional questions or sub-questions.\n"
             "2. Score its relevance (0-10) as a research question answerable with the ABS Person-Level Data Asset (PLIDA), where 0 is irrelevant and 10 is highly relevant.\n"
             "3. Identify the broad topic of the question: 'immigration', 'education', 'healthcare', 'poverty', 'social services', or 'unemployment'.\n"
             "4. If the score is 6 or higher, provide a list of variables to measure or construct to answer it. "
@@ -426,10 +427,13 @@ class QueryAnalyzer:
             "append '(highered)' to the description. "
             "For employment-related variables (e.g., employment, unemployment, jobseeker, labor market, workforce, job type, occupation, retrenchment), "
             "append '(employment)' to the description. "
-            "Return a valid JSON object with 'reformulated_question' (string), 'relevance_score' (int), 'topic' (string), and 'variables' (list of strings). "
+            "5. Determine if this research question requires longitudinal data (tracking the same individuals over time). Answer 'yes' if the research requires observing changes in the same people across multiple time periods, transitions, or development over time. Answer 'no' if it's a cross-sectional analysis comparing different groups or describing population characteristics at a single point in time. "
+            "Return a valid JSON object with 'reformulated_question' (string), 'relevance_score' (int), 'topic' (string), 'variables' (list of strings), and 'is_longitudinal' (boolean). "
             "Examples: "
-            "{'reformulated_question': 'What is the relationship between university degree attainment and unemployment rates among different age groups in Australia?', 'relevance_score': 8, 'topic': 'unemployment', 'variables': ['Age of respondent (demography)', 'Employment (employment)', 'University degree attainment (highered)']} "
-            "{'reformulated_question': 'How do poverty rates vary across different states in Australia?', 'relevance_score': 9, 'topic': 'poverty', 'variables': ['Income level', 'State', 'Age of respondent (demography)', 'Employment (employment)', 'Educational attainment']}"
+            "{'reformulated_question': 'What is the relationship between university degree attainment and unemployment rates among different age groups in Australia?', 'relevance_score': 8, 'topic': 'unemployment', 'variables': ['Age of respondent (demography)', 'Employment (employment)', 'University degree attainment (highered)'], 'is_longitudinal': false} "
+            "{'reformulated_question': 'How do poverty rates vary across different states in Australia?', 'relevance_score': 9, 'topic': 'poverty', 'variables': ['Income level', 'State', 'Age of respondent (demography)', 'Employment (employment)', 'Educational attainment'], 'is_longitudinal': false} "
+            "{'reformulated_question': 'What are the employment outcomes for refugees in Australia?', 'relevance_score': 8, 'topic': 'immigration', 'variables': ['Employment (employment)', 'Refugee information', 'Immigration details'], 'is_longitudinal': false} "
+            "{'reformulated_question': 'How do employment outcomes change for individuals after completing education?', 'relevance_score': 9, 'topic': 'education', 'variables': ['Employment (employment)', 'Educational attainment (highered)', 'Time periods'], 'is_longitudinal': true}"
         )
     
     def _build_medical_detection_prompt(self, user_input):
@@ -481,6 +485,7 @@ class QueryAnalyzer:
                 'relevance_score': data['relevance_score'],
                 'topic': data['topic'].lower(),
                 'variables': data['variables'],
+                'is_longitudinal': data.get('is_longitudinal', False),
                 'raw_response': response
             }
             
@@ -590,6 +595,71 @@ class QueryAnalyzer:
             'confidence': 0.0,
             'reasoning': 'Unable to assess relevance',
             'combined_query': '',
+            'raw_response': ''
+        }
+    
+    def recommend_datasets_for_conceptual_variable(self, conceptual_variable, available_datasets):
+        """Recommend 1-2 most relevant datasets for a conceptual variable when no specific variables are found."""
+        prompt = self._build_dataset_recommendation_prompt(conceptual_variable, available_datasets)
+        system_prompt = "You are a data expert specializing in Australian administrative datasets. Return only valid JSON."
+        
+        try:
+            response = self.llm_client.complete(system_prompt, prompt)
+            return self._parse_dataset_recommendation_response(response)
+        except Exception as e:
+            return {
+                'recommended_datasets': [],
+                'reasoning': f'Error getting recommendations: {str(e)}'
+            }
+    
+    def _build_dataset_recommendation_prompt(self, conceptual_variable, available_datasets):
+        """Build prompt for dataset recommendation."""
+        datasets_text = "\n".join([f"- **{ds.get('dataset_id', 'Unknown')}**: {ds.get('dataset_name', 'Unknown')} - {ds.get('dataset_description', 'No description')}" for ds in available_datasets])
+        
+        return (
+            f"Conceptual Variable Needed: '{conceptual_variable}'\n\n"
+            f"Available Datasets:\n{datasets_text}\n\n"
+            "Based on the conceptual variable needed and the available datasets, recommend 1-2 datasets that are most likely to contain variables related to this concept.\n\n"
+            "Consider:\n"
+            "- Which datasets would logically contain information about this concept\n"
+            "- The scope and coverage of each dataset\n"
+            "- The typical variables that would be found in administrative datasets\n"
+            "- Dataset descriptions and their relevance to the conceptual variable\n\n"
+            "Return a JSON object with:\n"
+            "- 'recommended_datasets': list of 1-2 dataset_ids that are most relevant\n"
+            "- 'reasoning': string explaining why these datasets were selected\n\n"
+            "Example: {'recommended_datasets': ['CENSUS', 'ACLD'], 'reasoning': 'Census datasets typically contain demographic variables like age, income, and education that would be relevant for this analysis'}"
+        )
+    
+    def _parse_dataset_recommendation_response(self, response):
+        """Parse and validate the dataset recommendation response."""
+        try:
+            # Clean response
+            if response.startswith("```json"):
+                response = response.split("```json", 1)[1].split("```", 1)[0].strip()
+            elif response.startswith("```"):
+                response = response.split("```", 1)[1].split("```", 1)[0].strip()
+            
+            if not response:
+                return self._default_dataset_recommendation_response()
+            
+            # Parse JSON
+            data = json.loads(response)
+            
+            return {
+                'recommended_datasets': data.get('recommended_datasets', []),
+                'reasoning': data.get('reasoning', 'No reasoning provided'),
+                'raw_response': response
+            }
+            
+        except Exception as e:
+            return self._default_dataset_recommendation_response()
+    
+    def _default_dataset_recommendation_response(self):
+        """Return default dataset recommendation response when parsing fails."""
+        return {
+            'recommended_datasets': [],
+            'reasoning': 'Unable to provide dataset recommendations',
             'raw_response': ''
         }
     

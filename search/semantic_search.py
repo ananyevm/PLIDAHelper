@@ -124,7 +124,8 @@ class SemanticSearchEngine:
                     })
         
         # Sort by final score and return top_k results
-        results.sort(key=lambda x: x['score'], reverse=True)
+        # Use variable_name as secondary sort key for deterministic ordering in case of ties
+        results.sort(key=lambda x: (x['score'], x['row'].get('variable_name', '')), reverse=True)
         return results[:top_k]
     
     def deduplicate_results(self, results, key_field='description'):
@@ -132,7 +133,7 @@ class SemanticSearchEngine:
         seen = {}
         deduplicated = []
         
-        for result in sorted(results, key=lambda x: x['score'], reverse=True):
+        for result in sorted(results, key=lambda x: (x['score'], x['row'].get('variable_name', '')), reverse=True):
             key_value = result['row'][key_field]
             if key_value not in seen:
                 seen[key_value] = True
@@ -176,7 +177,8 @@ class SemanticSearchEngine:
         filtered_results = self._filter_irrelevant_results(combined_results, query)
         
         # Sort by final score and return top results
-        filtered_results.sort(key=lambda x: x['score'], reverse=True)
+        # Use variable_name as secondary sort key for deterministic ordering in case of ties
+        filtered_results.sort(key=lambda x: (x['score'], x['row'].get('variable_name', '')), reverse=True)
         return filtered_results[:top_k]
     
     def _combine_expansion_results(self, results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -276,7 +278,8 @@ class SemanticSearchEngine:
         
         # Final deduplication and sorting
         final_results = self._combine_expansion_results(results)
-        final_results.sort(key=lambda x: x['score'], reverse=True)
+        # Use variable_name as secondary sort key for deterministic ordering in case of ties
+        final_results.sort(key=lambda x: (x['score'], x['row'].get('variable_name', '')), reverse=True)
         
         return final_results[:top_k], detected_concepts
     

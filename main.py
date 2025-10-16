@@ -50,6 +50,31 @@ def capture_and_display_response(user_input, gpt_data, causal_data, relevant_dat
         # Display the response content directly without header
         display_single_response(response_data, dataframes, search_engine, search_filters, query_analyzer, causal_analyzer, ui, result_display)
 
+def substitute_acld_with_census(dataset_results, is_longitudinal):
+    """Substitute ACLD with CENSUS when longitudinal analysis is not needed."""
+    if is_longitudinal:
+        return dataset_results  # Keep ACLD for longitudinal analysis
+    
+    substituted_results = []
+    for result in dataset_results:
+        row = result['row']
+        dataset_id = row.get('dataset_id', '')
+        
+        if dataset_id.upper() == 'ACLD':
+            # Try to find CENSUS equivalent
+            # For now, we'll replace ACLD entry with a CENSUS entry
+            # In a real implementation, you might want to load CENSUS data from dataframes
+            census_row = {
+                'dataset_id': 'CENSUS',
+                'dataset_name': 'Census of Population and Housing 2011',
+                'dataset_description': 'Complete population coverage from the 2011 Census, providing comprehensive demographic and socio-economic information.'
+            }
+            substituted_results.append({'row': census_row, 'score': result['score']})
+        else:
+            substituted_results.append(result)
+    
+    return substituted_results
+
 def display_single_response(response_data, dataframes, search_engine, search_filters, query_analyzer, causal_analyzer, ui, result_display):
     """Display a single stored response."""
     user_input = response_data['user_input']
@@ -169,7 +194,7 @@ def display_single_response(response_data, dataframes, search_engine, search_fil
     if dataset_results:
         for result in dataset_results:
             row = result['row']
-            # Skip ACLD for healthcare
+            # Skip ACLD for healthcare (this is now less likely since we substitute ACLD)
             if not (gpt_data['topic'] == "healthcare" and row["dataset_id"].upper() == "ACLD"):
                 if row.get('dataset_id'):
                     dataset_ids_from_results.add(row['dataset_id'])
@@ -202,7 +227,8 @@ def display_single_response(response_data, dataframes, search_engine, search_fil
             causal_data,
             unique_dataset_ids,
             dataframes,
-            loading_container  # Pass loading container to clear it when display starts
+            loading_container,  # Pass loading container to clear it when display starts
+            gpt_data.get('is_longitudinal', False)  # Pass longitudinal flag
         )
     
     # Display execution time
@@ -264,10 +290,15 @@ def main():
                 
                 # Search for relevant datasets
                 dataset_results = search_engine.search_datasets(user_input)
+                
+                # Apply ACLD to CENSUS substitution if not longitudinal
+                is_longitudinal = gpt_data.get('is_longitudinal', False)
+                dataset_results = substitute_acld_with_census(dataset_results, is_longitudinal)
+                
                 relevant_datasets = []
                 for result in dataset_results:
                     row = result['row']
-                    # Skip ACLD for healthcare
+                    # Skip ACLD for healthcare (this is now less likely to trigger since we substitute ACLD)
                     if not (gpt_data['topic'] == "healthcare" and row["dataset_id"].upper() == "ACLD"):
                         relevant_datasets.append(row['dataset_name'])
                 

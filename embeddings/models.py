@@ -1,5 +1,5 @@
 from sentence_transformers import SentenceTransformer
-from config import EMBEDDING_MODEL_NAME
+from config import EMBEDDING_MODEL_NAME, SEED
 
 class ModelManager:
     _instance = None
@@ -14,9 +14,17 @@ class ModelManager:
         """Get or initialize the SentenceTransformer model."""
         if self._model is None:
             self._model = SentenceTransformer(EMBEDDING_MODEL_NAME)
+            # Set random seed for deterministic embeddings
+            if hasattr(self._model, 'set_seed'):
+                self._model.set_seed(SEED)
         return self._model
     
     def encode(self, texts, **kwargs):
         """Encode texts to embeddings."""
         model = self.get_model()
+        # Ensure deterministic behavior by setting the seed before each encoding
+        import torch
+        import numpy as np
+        torch.manual_seed(SEED)
+        np.random.seed(SEED)
         return model.encode(texts, convert_to_numpy=True, **kwargs)

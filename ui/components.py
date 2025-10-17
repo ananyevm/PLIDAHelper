@@ -32,7 +32,6 @@ class UIComponents:
             st.markdown("""
             **Good examples:**
             - "Impact of NDIS on mental healthcare utilization"
-            - "Relationship between early childhood education and later academic outcomes"
             - "Employment outcomes for refugees in Australia"
             - "Factors affecting aged care service usage"
             

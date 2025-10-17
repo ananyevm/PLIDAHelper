@@ -15,7 +15,7 @@ class VariableSearchHelper:
     def search_and_process_variable(self, var_desc, search_engine, search_filters, 
                                   query_analyzer=None, user_input=None, topic=None, 
                                   relevant_datasets=None, is_longitudinal=False, 
-                                  available_datasets=None):
+                                  available_datasets=None, variable_category=None):
         """
         Complete pipeline for searching and processing a single variable.
         
@@ -29,6 +29,7 @@ class VariableSearchHelper:
             relevant_datasets: List of datasets to boost (optional)
             is_longitudinal: Whether analysis is longitudinal (optional)
             available_datasets: Available datasets for recommendations (optional)
+            variable_category: Variable category for ACLD substitution (optional)
             
         Returns:
             tuple: (search_results, dataset_ids, additional_searches)
@@ -45,6 +46,15 @@ class VariableSearchHelper:
         # Step 2: Apply population filtering if available
         if user_input and query_analyzer and var_results:
             var_results = query_analyzer.check_population_match(var_desc, var_results, search_engine)
+        
+        # Step 2.5: Apply ACLD to CENSUS substitution if needed
+        if var_results:
+            from .display import ResultDisplay
+            display = ResultDisplay()
+            # Apply substitution with category if available, otherwise assume control for all ACLD variables
+            category_to_use = variable_category or 'control'  # Default to control for all ACLD variables
+            
+            var_results = display.substitute_acld_variables_with_census(var_results, is_longitudinal, category_to_use)
         
         # Step 3: Process additional searches for employment variables
         additional_results = []
@@ -64,6 +74,15 @@ class VariableSearchHelper:
             # Apply population filtering to additional results
             if user_input and query_analyzer and add_results:
                 add_results = query_analyzer.check_population_match(enhanced_query, add_results, search_engine)
+            
+            # Apply ACLD to CENSUS substitution to additional results
+            if add_results:
+                from .display import ResultDisplay
+                display = ResultDisplay()
+                # Apply substitution with category if available, otherwise assume control for all ACLD variables
+                category_to_use = variable_category or 'control'  # Default to control for all ACLD variables
+                
+                add_results = display.substitute_acld_variables_with_census(add_results, is_longitudinal, category_to_use)
             
             if add_results:
                 additional_results.append((add_results, additional['note']))
@@ -126,7 +145,8 @@ class VariableSearchHelper:
             # Search for the variable
             var_results, _, additional_results = self.search_and_process_variable(
                 var_desc, search_engine, search_filters, query_analyzer, 
-                user_input, topic, relevant_datasets
+                user_input, topic, relevant_datasets, is_longitudinal=False, 
+                available_datasets=None, variable_category=None
             )
             
             # Collect dataset IDs from main results

@@ -295,28 +295,31 @@ class SemanticSearchEngine:
             variable_data = {
                 'variable_name': row.get('variable_name', ''),
                 'description': row.get('description', ''),
-                'dataset': row.get('dataset', '')
+                'dataset': row.get('dataset', ''),
+                'dataset_id': row.get('dataset_id', '')
             }
             variables_to_score.append(variable_data)
         
-        # Score variables using batch processing for efficiency
+        # Score variables using batch processing for efficiency with population data
         try:
-            relevance_scores = self.relevance_scorer.score_batch_relevance(
+            relevance_scores = self.relevance_scorer.score_batch_relevance_with_population(
                 conceptual_variable, variables_to_score
             )
         except Exception as e:
             # Return default scores for all variables if OpenAI fails
-            relevance_scores = [(0.5, "Could not evaluate relevance due to API error")] * len(variables_to_score)
+            relevance_scores = [(0.5, "Could not evaluate relevance due to API error", {})] * len(variables_to_score)
         
-        # Add relevance scores to results
+        # Add relevance scores and population data to results
         for i, result in enumerate(results):
             if i < len(relevance_scores):
-                probability, explanation = relevance_scores[i]
+                probability, explanation, population_match = relevance_scores[i]
                 result['openai_relevance'] = probability
                 result['relevance_explanation'] = explanation
+                result['population_match'] = population_match
             else:
                 result['openai_relevance'] = 0.5
                 result['relevance_explanation'] = "Could not evaluate relevance"
+                result['population_match'] = {}
         
         return results
     

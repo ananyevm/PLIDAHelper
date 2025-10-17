@@ -87,7 +87,7 @@ class ResultDisplay:
             self.ui.stream_text(updated_list_container, 
                               "\n".join([f"- {name}" for name in relevant_datasets]))
     
-    def substitute_acld_variables_with_census(self, search_results, is_longitudinal):
+    def substitute_acld_variables_with_census(self, search_results, is_longitudinal, variable_category=None):
         """Substitute ACLD variables with CENSUS equivalents when longitudinal analysis is not needed."""
         if is_longitudinal:
             return search_results  # Keep ACLD for longitudinal analysis
@@ -96,25 +96,154 @@ class ResultDisplay:
         for result in search_results:
             row = result['row']
             if row.get('dataset_id', '').upper() == 'ACLD':
-                # Create CENSUS equivalent
-                census_result = {
-                    'score': result['score'],
-                    'row': {
-                        'dataset_id': 'CENSUS',
-                        'dataset': 'Census of Population and Housing 2011',
-                        'variable_name': row.get('variable_name', ''),
-                        'description': row.get('description', '')
+                # Always try to find the equivalent variable in CENSUS dataset
+                census_variable = self._find_variable_in_census(
+                    row.get('variable_name', ''), 
+                    row.get('description', '')
+                )
+                
+                if census_variable:
+                    # Create CENSUS equivalent with actual CENSUS data
+                    census_result = {
+                        'score': result['score'],
+                        'row': {
+                            'dataset_id': 'CENSUS',
+                            'dataset': census_variable['dataset'],
+                            'variable_name': census_variable['variable_name'],
+                            'description': census_variable['description']
+                        }
                     }
-                }
-                # Copy other fields if they exist
-                for key in ['openai_relevance', 'relevance_explanation', 'population_match', 'is_core_alternative']:
-                    if key in result:
-                        census_result[key] = result[key]
-                substituted_results.append(census_result)
+                    # Copy other fields if they exist
+                    for key in ['openai_relevance', 'relevance_explanation', 'population_match', 'is_core_alternative']:
+                        if key in result:
+                            census_result[key] = result[key]
+                    substituted_results.append(census_result)
+                else:
+                    # If no exact match found, create generic CENSUS equivalent with ACLD variable info
+                    # Get CENSUS dataset name from datasets.csv
+                    csv_info = self._get_dataset_info_from_csv('CENSUS')
+                    if csv_info:
+                        census_dataset_name = csv_info['name']
+                    else:
+                        census_dataset_name = 'Census of Population and Housing 2011'
+                    
+                    census_result = {
+                        'score': result['score'],
+                        'row': {
+                            'dataset_id': 'CENSUS',
+                            'dataset': census_dataset_name,
+                            'variable_name': row.get('variable_name', ''),
+                            'description': row.get('description', '')
+                        }
+                    }
+                    # Copy other fields if they exist
+                    for key in ['openai_relevance', 'relevance_explanation', 'population_match', 'is_core_alternative']:
+                        if key in result:
+                            census_result[key] = result[key]
+                    substituted_results.append(census_result)
             else:
                 substituted_results.append(result)
         
         return substituted_results
+
+    def _find_variable_in_census(self, variable_name, variable_description):
+        """Find a variable in CENSUS dataset by matching variable name and description."""
+        try:
+            import pandas as pd
+            
+            # Load plida4.csv to search for CENSUS variables
+            plida4_df = pd.read_csv('resources/plida4.csv')
+            
+            # Filter for CENSUS dataset
+            census_variables = plida4_df[plida4_df['dataset_id'] == 'CENSUS']
+            
+            if census_variables.empty:
+                return None
+            
+            # Try exact variable name match first
+            exact_match = census_variables[
+                census_variables['variable_name'].str.upper() == variable_name.upper()
+            ]
+            
+            if not exact_match.empty:
+                # Return the first exact match
+                match = exact_match.iloc[0]
+                return {
+                    'dataset': match['dataset'],
+                    'variable_name': match['variable_name'],
+                    'description': match['description']
+                }
+            
+            # Conservative matching - only for very specific cases
+            # Use exact variable name patterns that are known to exist in CENSUS
+            variable_name_upper = variable_name.upper()
+            variable_description_lower = variable_description.lower()
+            
+            # Map of common ACLD variable patterns to CENSUS equivalents
+            known_mappings = {
+                # Employment related
+                'LFST': ['LFSF'],  # Labour Force Status
+                'EMPS': ['EMPP', 'SIEMP'],  # Employment Status/Employees
+                'INDUSTRY': ['INDP'],  # Industry
+                'OCCUPATION': ['OCCP'],  # Occupation
+                # Demographics
+                'AGE': ['AGEP'],  # Age
+                'SEX': ['SEXP'],  # Sex
+            }
+            
+            # Try pattern-based matching for known cases
+            for acld_pattern, census_patterns in known_mappings.items():
+                if acld_pattern in variable_name_upper or acld_pattern.lower() in variable_description_lower:
+                    for census_pattern in census_patterns:
+                        # Look for exact census variable name match
+                        census_match = census_variables[
+                            census_variables['variable_name'].str.contains(census_pattern, case=False, na=False)
+                        ]
+                        
+                        if not census_match.empty:
+                            match = census_match.iloc[0]
+                            return {
+                                'dataset': match['dataset'],
+                                'variable_name': match['variable_name'],
+                                'description': match['description']
+                            }
+            
+            # Very conservative description matching - only for clear cases
+            if 'labour force status' in variable_description_lower:
+                lfst_vars = census_variables[census_variables['description'].str.contains('Labour Force Status', case=False, na=False)]
+                if not lfst_vars.empty:
+                    match = lfst_vars.iloc[0]
+                    return {
+                        'dataset': match['dataset'],
+                        'variable_name': match['variable_name'],
+                        'description': match['description']
+                    }
+            
+            if 'employment status' in variable_description_lower:
+                emp_vars = census_variables[census_variables['description'].str.contains('Employment', case=False, na=False)]
+                if not emp_vars.empty:
+                    match = emp_vars.iloc[0]
+                    return {
+                        'dataset': match['dataset'],
+                        'variable_name': match['variable_name'],
+                        'description': match['description']
+                    }
+            
+            if 'industry of employment' in variable_description_lower or 'industry' in variable_description_lower:
+                ind_vars = census_variables[census_variables['description'].str.contains('Industry of Employment', case=False, na=False)]
+                if not ind_vars.empty:
+                    match = ind_vars.iloc[0]
+                    return {
+                        'dataset': match['dataset'],
+                        'variable_name': match['variable_name'],
+                        'description': match['description']
+                    }
+            
+            return None
+            
+        except Exception as e:
+            # If anything fails, return None to keep ACLD
+            return None
 
     def _substitute_acld_datasets_in_results(self, dataset_results):
         """Substitute ACLD datasets with CENSUS in the results list."""
@@ -137,11 +266,11 @@ class ResultDisplay:
         
         return substituted_results
 
-    def display_variable_results(self, variable_desc, index, search_results, dataset_note, query_analyzer=None, is_longitudinal=False, available_datasets=None):
+    def display_variable_results(self, variable_desc, index, search_results, dataset_note, query_analyzer=None, is_longitudinal=False, available_datasets=None, variable_category=None):
         """Display variable search results."""
         
         # Apply ACLD to CENSUS substitution if not longitudinal
-        search_results = self.substitute_acld_variables_with_census(search_results, is_longitudinal)
+        search_results = self.substitute_acld_variables_with_census(search_results, is_longitudinal, variable_category)
         
         # Deduplicate search results based on dataset, variable name, and description
         search_results = self._deduplicate_variable_results(search_results)
@@ -155,6 +284,9 @@ class ResultDisplay:
             dataset_id = result['row'].get('dataset_id', '')
             if dataset_id:
                 dataset_ids.add(dataset_id)
+        
+        # Check if any variable has population coverage warning
+        has_population_warning = self._check_for_population_warnings(search_results)
         
         # Separate regular results from CORE alternatives
         regular_results = [r for r in search_results if not r.get('is_core_alternative', False)]
@@ -205,20 +337,20 @@ class ResultDisplay:
                     "We could not locate variables matching this description. However, the information we have access to is limited. "
                     "Please refer to the documentation of the datasets listed above—it's possible you'll find what you're looking for there.")
         
-        return dataset_ids
+        return dataset_ids, has_population_warning
     
     def _deduplicate_variable_results(self, search_results):
-        """Remove duplicate variables with same dataset, variable name, and description."""
+        """Remove duplicate variables with same dataset_id and variable_name."""
         seen = set()
         deduplicated = []
         
         for result in search_results:
             row = result['row']
-            # Create a unique key based on dataset, variable name, and description
+            # Create a unique key based on dataset_id and variable name only
+            # This catches duplicates across different years of the same dataset
             key = (
-                row.get('dataset', '').strip(),
-                row.get('variable_name', '').strip(),
-                row.get('description', '').strip()
+                row.get('dataset_id', '').strip(),
+                row.get('variable_name', '').strip()
             )
             
             if key not in seen:
@@ -243,6 +375,14 @@ class ResultDisplay:
                 filtered_results.append(result)
         
         return filtered_results
+    
+    def _check_for_population_warnings(self, search_results):
+        """Check if any of the search results has a population coverage warning."""
+        for result in search_results:
+            population_match = result.get('population_match')
+            if population_match and population_match.get('match') == 'maybe':
+                return True
+        return False
     
     def _is_core_only_variable(self, var_desc):
         """Check if variable should only be searched in CORE datasets.
@@ -435,6 +575,67 @@ class ResultDisplay:
             # Fallback: return empty list if search fails
             return []
     
+    def _get_dataset_name_from_csv(self, dataset_id):
+        """Get dataset name from datasets.csv by dataset_id."""
+        try:
+            import pandas as pd
+            
+            # Load datasets.csv
+            datasets_df = pd.read_csv('resources/datasets.csv')
+            
+            # Find the dataset by ID
+            dataset_row = datasets_df[datasets_df['dataset_id'] == dataset_id]
+            
+            if not dataset_row.empty:
+                return dataset_row.iloc[0]['dataset_name']
+            else:
+                return None
+                
+        except Exception as e:
+            return None
+
+    def _get_dataset_info_from_csv(self, dataset_id):
+        """Get dataset name and description from datasets.csv by dataset_id."""
+        try:
+            import pandas as pd
+            
+            # Load datasets.csv
+            datasets_df = pd.read_csv('resources/datasets.csv')
+            
+            # Find the dataset by ID
+            dataset_row = datasets_df[datasets_df['dataset_id'] == dataset_id]
+            
+            if not dataset_row.empty:
+                row = dataset_row.iloc[0]
+                return {
+                    'name': row['dataset_name'],
+                    'description': row['dataset_description']
+                }
+            else:
+                return None
+                
+        except Exception as e:
+            return None
+
+    def _get_period_from_csv(self, dataset_id):
+        """Get reference_period from periods.csv by dataset_id."""
+        try:
+            import pandas as pd
+            
+            # Load periods.csv
+            periods_df = pd.read_csv('resources/periods.csv')
+            
+            # Find the dataset by ID
+            period_row = periods_df[periods_df['dataset_id'] == dataset_id]
+            
+            if not period_row.empty:
+                return period_row.iloc[0]['reference_period']
+            else:
+                return None
+                
+        except Exception as e:
+            return None
+
     def _display_single_variable_result(self, result, is_core_alternative=False, query_analyzer=None):
         """Display a single variable result."""
         row = result['row']
@@ -443,19 +644,35 @@ class ResultDisplay:
         
         # Removed prioritization indicators for cleaner display
         
-        # Check for population match information
-        population_match = result.get('population_match')
-        population_warning = ""
+        # Individual population warnings removed - now handled at section level
         
-        if population_match:
-            if population_match['match'] == 'maybe':
-                population_warning = " **Please verify that this variable's population matches your research needs**"
-            # Only show warnings - no positive confirmations
+        # Get dataset name - use datasets.csv for non-CORE datasets, plida4.csv for CORE
+        dataset_id = row.get('dataset_id', 'Unknown')
+        if dataset_id.upper() == 'CORE':
+            # For CORE dataset, use the dataset name from plida4.csv (row['dataset'])
+            # Remove parenthetical information like "(2011 Census)"
+            dataset_name = row['dataset']
+            if '(' in dataset_name:
+                dataset_display_name = dataset_name.split('(')[0].strip()
+            else:
+                dataset_display_name = dataset_name
+        else:
+            # For other datasets, look up the name from datasets.csv
+            dataset_name_from_csv = self._get_dataset_name_from_csv(dataset_id)
+            if dataset_name_from_csv:
+                dataset_display_name = dataset_name_from_csv
+            else:
+                # Fallback to plida4.csv name if not found in datasets.csv
+                dataset_display_name = row['dataset']
+        
+        # Get period information
+        period_covered = self._get_period_from_csv(dataset_id)
+        period_text = f" | **Period covered:** {period_covered}" if period_covered else ""
         
         match_text = (
-            f"- **Dataset:** {row.get('dataset_id', 'Unknown')} - {row['dataset']} | "
+            f"- **Dataset:** {dataset_id} - {dataset_display_name} | "
             f"**Variable:** {row['variable_name']} | "
-            f"**Description:** {truncated_desc}{population_warning}"
+            f"**Description:** {truncated_desc}{period_text}"
         )
         match_container = st.empty()
         self.ui.stream_text(match_container, match_text)
@@ -513,11 +730,26 @@ class ResultDisplay:
                     "data linking capabilities. You need to verify the specific linking rules and restrictions with the concordance files available in the ABS datalab."
                 )
                 
+                # Remove duplicates from linkable datasets
+                unique_synthetic_datasets = list(set(synthetic_datasets))
+                
                 # Display linkable datasets
-                for dataset_id in sorted(synthetic_datasets):
-                    # Get dataset name from plida4
-                    dataset_info = plida4_df[plida4_df['dataset_id'] == dataset_id].iloc[0]
-                    dataset_name = dataset_info['dataset']
+                for dataset_id in sorted(unique_synthetic_datasets):
+                    # Get dataset name from datasets.csv (except for CORE)
+                    if dataset_id.upper() == 'CORE':
+                        # For CORE, get from plida4 (more specific)
+                        dataset_info = plida4_df[plida4_df['dataset_id'] == dataset_id].iloc[0]
+                        dataset_name = dataset_info['dataset']
+                    else:
+                        # For other datasets, try to get from datasets.csv
+                        csv_info = self._get_dataset_info_from_csv(dataset_id)
+                        if csv_info:
+                            dataset_name = csv_info['name']
+                        else:
+                            # Fallback to plida4
+                            dataset_info = plida4_df[plida4_df['dataset_id'] == dataset_id].iloc[0]
+                            dataset_name = dataset_info['dataset']
+                    
                     st.write(f"• **{dataset_id}**: {dataset_name}")
                 
                 st.write(
@@ -638,6 +870,7 @@ class ResultDisplay:
             filtered_dataset_ids = self._display_unified_datasets(dataset_results, unique_dataset_ids, dataframes, query_analyzer, topic, loading_container, is_longitudinal, user_input)
         
         # Then display variables
+        variable_dataset_ids = []
         if categorized:
             if causal_data['is_causal'] and causal_data['confidence'] > 0.6:
                 # Display causal variables
@@ -668,9 +901,19 @@ class ResultDisplay:
                     dataframes
                 )
         
-        # Display linking strategy at the end using only filtered datasets
-        if filtered_dataset_ids:
-            self.check_and_display_linking_strategy([set(filtered_dataset_ids)], is_longitudinal)
+        # Collect all dataset IDs for linking strategy (including Employment income datasets)
+        all_datasets_for_linking = set(filtered_dataset_ids)
+        if variable_dataset_ids:
+            for dataset_collection in variable_dataset_ids:
+                if isinstance(dataset_collection, set):
+                    all_datasets_for_linking.update(dataset_collection)
+                elif isinstance(dataset_collection, (list, tuple)):
+                    all_datasets_for_linking.update(dataset_collection)
+        
+        
+        # Display linking strategy at the end using all datasets
+        if all_datasets_for_linking:
+            self.check_and_display_linking_strategy([all_datasets_for_linking], is_longitudinal)
     
     def _display_unified_datasets(self, dataset_results, unique_dataset_ids, dataframes, query_analyzer, topic, loading_container=None, is_longitudinal=False, user_input=None):
         """Display unified list of datasets from both search results and variables.
@@ -697,13 +940,30 @@ class ResultDisplay:
         if dataset_results:
             for result in dataset_results:
                 row = result['row']
+                dataset_id = row['dataset_id']
                 # Skip ACLD for healthcare
-                if not (topic == "healthcare" and row["dataset_id"].upper() == "ACLD"):
+                if not (topic == "healthcare" and dataset_id.upper() == "ACLD"):
+                    # Get dataset info from datasets.csv (except for CORE)
+                    if dataset_id.upper() == 'CORE':
+                        # For CORE, use the info from dataframes (more specific)
+                        dataset_name = row['dataset_name']
+                        dataset_description = row['dataset_description']
+                    else:
+                        # For other datasets, try to get from datasets.csv
+                        csv_info = self._get_dataset_info_from_csv(dataset_id)
+                        if csv_info:
+                            dataset_name = csv_info['name']
+                            dataset_description = csv_info['description']
+                        else:
+                            # Fallback to original data
+                            dataset_name = row['dataset_name']
+                            dataset_description = row['dataset_description']
+                    
                     from utils import truncate_description
-                    truncated_desc = truncate_description(row['dataset_description'], query_analyzer=query_analyzer, context_type="dataset")
+                    truncated_desc = truncate_description(dataset_description, query_analyzer=query_analyzer, context_type="dataset")
                     dataset_info = {
-                        'id': row['dataset_id'],
-                        'name': row['dataset_name'],
+                        'id': dataset_id,
+                        'name': dataset_name,
                         'description': truncated_desc,
                         'source': 'search'
                     }
@@ -715,11 +975,22 @@ class ResultDisplay:
             if dataset_id not in included_ids:
                 # Apply ACLD to CENSUS substitution for variable-derived datasets
                 if dataset_id.upper() == 'ACLD' and not is_longitudinal:
-                    # Substitute ACLD with CENSUS
+                    # Get CENSUS info from datasets.csv
+                    csv_info = self._get_dataset_info_from_csv('CENSUS')
+                    if csv_info:
+                        dataset_name = csv_info['name']
+                        dataset_description = csv_info['description']
+                    else:
+                        # Fallback to hardcoded values
+                        dataset_name = 'Census of Population and Housing 2011'
+                        dataset_description = 'Complete population coverage from the 2011 Census, providing comprehensive demographic and socio-economic information.'
+                    
+                    from utils import truncate_description
+                    truncated_desc = truncate_description(dataset_description, query_analyzer=query_analyzer, context_type="dataset")
                     dataset_info = {
                         'id': 'CENSUS',
-                        'name': 'Census of Population and Housing 2011',
-                        'description': 'Complete population coverage from the 2011 Census, providing comprehensive demographic and socio-economic information.',
+                        'name': dataset_name,
+                        'description': truncated_desc,
                         'source': 'variables'
                     }
                     # Only add if CENSUS not already included
@@ -727,21 +998,53 @@ class ResultDisplay:
                         dataset_info_list.append(dataset_info)
                         included_ids.add('CENSUS')
                 else:
-                    # Look up dataset info from dataframes
-                    dataset_row = dataframes['datasets'][dataframes['datasets']['dataset_id'] == dataset_id]
-                    if not dataset_row.empty:
-                        row = dataset_row.iloc[0]
-                        # Skip ACLD for healthcare
-                        if not (topic == "healthcare" and dataset_id.upper() == "ACLD"):
-                            from utils import truncate_description
-                            truncated_desc = truncate_description(row['dataset_description'], query_analyzer=query_analyzer, context_type="dataset")
-                            dataset_info = {
-                                'id': dataset_id,
-                                'name': row['dataset_name'],
-                                'description': truncated_desc,
-                                'source': 'variables'
-                            }
-                            dataset_info_list.append(dataset_info)
+                    # Skip ACLD for healthcare
+                    if not (topic == "healthcare" and dataset_id.upper() == "ACLD"):
+                        # Get dataset info from datasets.csv (except for CORE)
+                        if dataset_id.upper() == 'CORE':
+                            # For CORE, look up from dataframes (more specific)
+                            dataset_row = dataframes['datasets'][dataframes['datasets']['dataset_id'] == dataset_id]
+                            if not dataset_row.empty:
+                                row = dataset_row.iloc[0]
+                                dataset_name = row['dataset_name']
+                                dataset_description = row['dataset_description']
+                            else:
+                                continue  # Skip if not found
+                        else:
+                            # For other datasets, try to get from datasets.csv
+                            csv_info = self._get_dataset_info_from_csv(dataset_id)
+                            if csv_info:
+                                dataset_name = csv_info['name']
+                                dataset_description = csv_info['description']
+                            else:
+                                # Fallback to dataframes
+                                dataset_row = dataframes['datasets'][dataframes['datasets']['dataset_id'] == dataset_id]
+                                if not dataset_row.empty:
+                                    row = dataset_row.iloc[0]
+                                    dataset_name = row['dataset_name']
+                                    dataset_description = row['dataset_description']
+                                else:
+                                    continue  # Skip if not found
+                        
+                        from utils import truncate_description
+                        truncated_desc = truncate_description(dataset_description, query_analyzer=query_analyzer, context_type="dataset")
+                        dataset_info = {
+                            'id': dataset_id,
+                            'name': dataset_name,
+                            'description': truncated_desc,
+                            'source': 'variables'
+                        }
+                        dataset_info_list.append(dataset_info)
+        
+        # Remove duplicates based on dataset_id
+        seen_ids = set()
+        deduplicated_list = []
+        for dataset_info in dataset_info_list:
+            if dataset_info['id'] not in seen_ids:
+                seen_ids.add(dataset_info['id'])
+                deduplicated_list.append(dataset_info)
+        
+        dataset_info_list = deduplicated_list
         
         # Display the unified dataset list with relevance scores
         if not dataset_info_list:
@@ -891,6 +1194,7 @@ class ResultDisplay:
         # Collect dataset IDs for linking strategy
         all_dataset_ids = []
         employment_detected = False
+        section_has_population_warning = False
         
         for i, var_desc in enumerate(variables):
             with st.container():
@@ -905,33 +1209,44 @@ class ResultDisplay:
                 # Search and process the variable using the helper
                 var_results, dataset_note, additional_results = self.search_helper.search_and_process_variable(
                     var_desc, search_engine, search_filters, query_analyzer, 
-                    user_input, topic, relevant_datasets, is_longitudinal, available_datasets
+                    user_input, topic, relevant_datasets, is_longitudinal, available_datasets, category
                 )
                 
                 # Display main variable results
                 if var_results:
-                    dataset_ids = self.display_variable_results(
-                        var_desc, i, var_results, dataset_note, query_analyzer, is_longitudinal, available_datasets
+                    dataset_ids, has_warning = self.display_variable_results(
+                        var_desc, i, var_results, dataset_note, query_analyzer, is_longitudinal, available_datasets, category
                     )
                     if dataset_ids:
                         all_dataset_ids.append(dataset_ids)
+                    if has_warning:
+                        section_has_population_warning = True
                 
                 # Display additional search results
                 for add_results, note in additional_results:
-                    dataset_ids = self.display_variable_results(
-                        var_desc, i, add_results, note, query_analyzer, is_longitudinal, available_datasets
+                    dataset_ids, has_warning = self.display_variable_results(
+                        var_desc, i, add_results, note, query_analyzer, is_longitudinal, available_datasets, category
                     )
                     if dataset_ids:
                         all_dataset_ids.append(dataset_ids)
+                    if has_warning:
+                        section_has_population_warning = True
                 
                 # Removed horizontal line for cleaner display
         
         # Display PIT_ITR earnings variables if employment status detected
         if employment_detected:
-            earnings_count = self._display_pit_itr_earnings(search_engine, ui, relevant_datasets, start_number + len(variables))
+            earnings_count, earnings_dataset_ids = self._display_pit_itr_earnings(search_engine, ui, relevant_datasets, start_number + len(variables))
             next_number = start_number + len(variables) + earnings_count
+            # Add employment income dataset IDs to the collection
+            if earnings_dataset_ids:
+                all_dataset_ids.append(earnings_dataset_ids)
         else:
             next_number = start_number + len(variables)
+        
+        # Add section-level population coverage note if any variable requires verification
+        if section_has_population_warning:
+            st.write("**Note:** Please verify that population covered by these variables matches your research needs.")
         
         # Linking strategy will be displayed once at the end of the entire response
         return all_dataset_ids, next_number
@@ -1173,14 +1488,15 @@ class ResultDisplay:
         
         # Search for earnings variables in PIT_ITR
         earnings_results = search_engine.search_variables(
-            "earnings allowances tips", 
+            "wages and salary", 
             "ato", 
             boost_datasets=relevant_datasets,
             use_openai_relevance=True,
-            conceptual_variable="earnings allowances tips"
+            conceptual_variable="wages and salary"
         )
         
         displayed_count = 0
+        dataset_ids = set()
         
         if earnings_results:
             # Filter to only show PIT_ITR results
@@ -1195,6 +1511,9 @@ class ResultDisplay:
                     if var_name not in seen_variables:
                         seen_variables.add(var_name)
                         unique_results.append(result)
+                        # Collect dataset ID
+                        dataset_id = result['row'].get('dataset_id', 'PIT_ITR')
+                        dataset_ids.add(dataset_id)
                 
                 if unique_results:
                     # Display conceptual variable heading
@@ -1206,11 +1525,31 @@ class ResultDisplay:
                     for i, result in enumerate(unique_results[:5]):
                         row = result['row']
                         
+                        # Get dataset name using the same logic as other variables
+                        dataset_id = row.get('dataset_id', 'PIT_ITR')
+                        if dataset_id.upper() == 'CORE':
+                            # Remove parenthetical information like "(2011 Census)"
+                            dataset_name = row.get('dataset', 'Unknown')
+                            if '(' in dataset_name:
+                                dataset_display_name = dataset_name.split('(')[0].strip()
+                            else:
+                                dataset_display_name = dataset_name
+                        else:
+                            dataset_name_from_csv = self._get_dataset_name_from_csv(dataset_id)
+                            if dataset_name_from_csv:
+                                dataset_display_name = dataset_name_from_csv
+                            else:
+                                dataset_display_name = row.get('dataset', 'Unknown')
+                        
+                        # Get period information
+                        period_covered = self._get_period_from_csv(dataset_id)
+                        period_text = f" | **Period covered:** {period_covered}" if period_covered else ""
+                        
                         # Create earnings variable display
                         earnings_text = (
+                            f"**Dataset:** {dataset_id} - {dataset_display_name} | "
                             f"**Variable:** {row.get('variable_name', 'Unknown')} | "
-                            f"**Dataset:** {row.get('dataset_id', 'PIT_ITR')} - PIT_ITR (Income Tax Return) | "
-                            f"**Description:** {row.get('description', 'No description')}"
+                            f"**Description:** {row.get('description', 'No description')}{period_text}"
                         )
                         
                         container = st.empty()
@@ -1218,9 +1557,9 @@ class ResultDisplay:
                     
                     # Add employment indicator note after the variables
                     st.write(
-                        "**Employment Indicator:** Non-zero values in these earnings variables indicate employment. "
+                        "**Note:** Non-zero values in these earnings variables indicate employment. "
                         "These tax return variables provide comprehensive employment income information that can be used "
                         "to identify employed individuals and measure employment earnings."
                     )
         
-        return displayed_count
+        return displayed_count, dataset_ids

@@ -18,8 +18,12 @@ class VariableType:
         """
         if VariableType.is_indigenous(var_desc):
             return 'indigenous'
+        elif VariableType.is_visa(var_desc):
+            return 'visa'
         elif VariableType.is_core_demographic(var_desc):
             return 'core_demographic'
+        elif VariableType.is_occupation(var_desc):
+            return 'occupation'
         elif VariableType.is_employment(var_desc):
             return 'employment'
         elif VariableType.is_location(var_desc):
@@ -40,6 +44,15 @@ class VariableType:
         
         # Check if the variable description contains Indigenous terms
         if any(term in var_desc_lower for term in indigenous_terms):
+            return True
+            
+        return False
+    
+    @staticmethod
+    def is_visa(var_desc):
+        """Check if variable is marked as visa/migration related."""
+        # Primary check: explicit (visa) suffix
+        if var_desc.strip().endswith('(visa)'):
             return True
             
         return False
@@ -86,11 +99,27 @@ class VariableType:
         """Check if variable is employment-related."""
         employment_keywords = [
             'employment status', 'employment', 'employed', 'unemployed', 
-            'job status', 'work status', 'occupation', 'workforce',
+            'job status', 'work status', 'workforce',
             'labor force', 'labour force', 'jobseeker', 'employment type'
         ]
         var_desc_lower = var_desc.lower()
         return any(keyword in var_desc_lower for keyword in employment_keywords)
+    
+    @staticmethod
+    def is_occupation(var_desc):
+        """Check if variable is occupation-specific."""
+        # Primary check: explicit (occup) suffix
+        if var_desc.strip().endswith('(occup)'):
+            return True
+        
+        # Fallback check: occupation-specific terms
+        occupation_keywords = [
+            'occupation', 'occupational', 'job title', 'profession', 'work role',
+            'job category', 'occupational classification', 'occupational category',
+            'what occupation', 'which occupation', 'type of occupation'
+        ]
+        var_desc_lower = var_desc.lower()
+        return any(keyword in var_desc_lower for keyword in occupation_keywords)
     
     @staticmethod
     def is_location(var_desc):
@@ -132,6 +161,42 @@ class IndigenousSearchStrategy(SearchStrategy):
         from ui.display import ResultDisplay
         display = ResultDisplay()
         return display._search_combined_only_variable(search_query, search_engine)
+
+
+class VisaSearchStrategy(SearchStrategy):
+    """Search strategy for visa/migration variables - uses VISA dataset only."""
+    
+    def enhance_query(self, var_desc, base_query):
+        """Remove (visa) suffix and enhance for visa-specific search."""
+        if base_query.strip().endswith('(visa)'):
+            clean_query = base_query.replace('(visa)', '').strip()
+        else:
+            clean_query = base_query
+        
+        # Add visa-specific terms to improve search
+        visa_terms = ['visa type', 'visa class', 'visa subclass', 'migration', 'immigration']
+        
+        # Add humanitarian/refugee-specific terms to capture broader visa types
+        humanitarian_terms = ['humanitarian', 'refugee', 'protection', 'asylum']
+        
+        # Combine all enhancement terms
+        all_terms = visa_terms + humanitarian_terms
+        enhanced_query = f"{clean_query} {' '.join(all_terms)}"
+        return enhanced_query
+    
+    def search(self, var_desc, search_query, search_engine, **kwargs):
+        """Search only in VISA dataset for visa/migration variables."""
+        # Filter to only VISA dataset
+        results = search_engine.search_variables(
+            search_query, 
+            boost_datasets=['VISA'],
+            **kwargs
+        )
+        
+        # Filter results to only include VISA dataset
+        visa_results = [result for result in results if result['row'].get('dataset_id', '').upper() == 'VISA']
+        
+        return visa_results
 
 
 class CoreDemographicSearchStrategy(SearchStrategy):
@@ -191,6 +256,121 @@ class LocationSearchStrategy(SearchStrategy):
         return EmploymentSearchStrategy()._standard_search(var_desc, search_query, search_engine, **kwargs)
 
 
+class OccupationSearchStrategy(SearchStrategy):
+    """Search strategy for occupation-specific variables - restricts to CENSUS and PIT_ITR datasets."""
+    
+    def enhance_query(self, var_desc, base_query):
+        """No enhancement needed for occupation variables."""
+        return base_query
+    
+    def search(self, var_desc, search_query, search_engine, **kwargs):
+        """Search only in CENSUS and PIT_ITR datasets for occupation variables."""
+        import pandas as pd
+        
+        # Load plida4.csv directly to search only CENSUS and PIT_ITR
+        plida4_df = pd.read_csv('resources/plida4.csv')
+        
+        # Filter for only CENSUS and PIT_ITR datasets
+        allowed_datasets = ['CENSUS', 'PIT_ITR']
+        filtered_variables = plida4_df[plida4_df['dataset_id'].isin(allowed_datasets)].copy()
+        
+        if filtered_variables.empty:
+            return []
+        
+        # Search for matches in filtered variables
+        results = []
+        query_lower = search_query.lower()
+        
+        for _, row in filtered_variables.iterrows():
+            description = str(row['description']).lower()
+            variable_name = str(row['variable_name']).lower()
+            combined_text = f"{description} {variable_name}"
+            
+            score = 0
+            
+            # Score based on query terms
+            query_terms = query_lower.split()
+            for term in query_terms:
+                if len(term) > 1:  # Allow 2+ character terms
+                    # Exact variable name match gets highest priority
+                    if term == variable_name:
+                        score += 10  # Exact match gets top score
+                    elif term in variable_name:
+                        score += 5  # Partial variable name match
+                    elif term in description:
+                        score += 1  # Description match
+            
+            # Special handling for occupation-related keywords
+            occupation_keywords = ['occupation', 'occupational', 'job', 'profession', 'work']
+            for keyword in occupation_keywords:
+                if keyword in query_lower:
+                    if keyword in combined_text:
+                        score += 8  # High boost for occupation keyword matches
+            
+            # Only include results with positive scores
+            if score > 0:
+                # Normalize score
+                normalized_score = max(0.1, min(score / 10.0, 1.0))
+                
+                result = {
+                    'score': normalized_score,
+                    'row': {
+                        'dataset_id': row['dataset_id'],
+                        'dataset': row['dataset'],
+                        'variable_name': row['variable_name'],
+                        'description': row['description']
+                    }
+                }
+                results.append(result)
+        
+        # Sort by score and return top results
+        results = sorted(results, key=lambda x: (x['score'], x['row'].get('variable_name', '')), reverse=True)
+        
+        # Deduplicate results based on dataset_id, variable_name, and description
+        # Also group similar datasets (e.g., different years of Income Tax Return)
+        seen = set()
+        deduplicated_results = []
+        
+        for result in results:
+            row = result['row']
+            # Create a unique key based on dataset_id, variable name, and description
+            # For PIT_ITR, group all years together by using just the variable name and description
+            dataset_key = row.get('dataset_id', '').strip()
+            if dataset_key == 'PIT_ITR':
+                # For PIT_ITR, only use variable name and description to group across years
+                key = (
+                    'PIT_ITR',
+                    row.get('variable_name', '').strip(),
+                    row.get('description', '').strip()
+                )
+            else:
+                # For other datasets, use full dataset information
+                key = (
+                    dataset_key,
+                    row.get('variable_name', '').strip(),
+                    row.get('description', '').strip()
+                )
+            
+            if key not in seen:
+                seen.add(key)
+                deduplicated_results.append(result)
+        
+        # Add OpenAI relevance scoring if available
+        final_results = deduplicated_results[:10]  # Get top 10 unique results
+        
+        # Add OpenAI relevance scores if search_engine has relevance_scorer
+        if hasattr(search_engine, 'relevance_scorer') and search_engine.relevance_scorer:
+            try:
+                final_results = search_engine._add_openai_relevance_scores(final_results, search_query)
+            except Exception as e:
+                # If OpenAI scoring fails, add default scores
+                for result in final_results:
+                    result['openai_relevance'] = 0.6
+                    result['relevance_explanation'] = "Occupation variable from CENSUS/PIT_ITR dataset"
+        
+        return final_results
+
+
 class GeneralSearchStrategy(SearchStrategy):
     """Default search strategy for general variables."""
     
@@ -209,7 +389,9 @@ class VariableSearchCoordinator:
     def __init__(self):
         self.strategies = {
             'indigenous': IndigenousSearchStrategy(),
+            'visa': VisaSearchStrategy(),
             'core_demographic': CoreDemographicSearchStrategy(),
+            'occupation': OccupationSearchStrategy(),
             'employment': EmploymentSearchStrategy(),
             'location': LocationSearchStrategy(),
             'general': GeneralSearchStrategy()

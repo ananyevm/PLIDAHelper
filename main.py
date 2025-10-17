@@ -61,14 +61,34 @@ def substitute_acld_with_census(dataset_results, is_longitudinal):
         dataset_id = row.get('dataset_id', '')
         
         if dataset_id.upper() == 'ACLD':
-            # Try to find CENSUS equivalent
-            # For now, we'll replace ACLD entry with a CENSUS entry
-            # In a real implementation, you might want to load CENSUS data from dataframes
-            census_row = {
-                'dataset_id': 'CENSUS',
-                'dataset_name': 'Census of Population and Housing 2011',
-                'dataset_description': 'Complete population coverage from the 2011 Census, providing comprehensive demographic and socio-economic information.'
-            }
+            # Get CENSUS info from datasets.csv
+            try:
+                import pandas as pd
+                datasets_df = pd.read_csv('resources/datasets.csv')
+                census_row_csv = datasets_df[datasets_df['dataset_id'] == 'CENSUS']
+                
+                if not census_row_csv.empty:
+                    census_data = census_row_csv.iloc[0]
+                    census_row = {
+                        'dataset_id': 'CENSUS',
+                        'dataset_name': census_data['dataset_name'],
+                        'dataset_description': census_data['dataset_description']
+                    }
+                else:
+                    # Fallback to hardcoded values
+                    census_row = {
+                        'dataset_id': 'CENSUS',
+                        'dataset_name': 'Census of Population and Housing 2011',
+                        'dataset_description': 'Complete population coverage from the 2011 Census, providing comprehensive demographic and socio-economic information.'
+                    }
+            except Exception:
+                # Fallback to hardcoded values if CSV loading fails
+                census_row = {
+                    'dataset_id': 'CENSUS',
+                    'dataset_name': 'Census of Population and Housing 2011',
+                    'dataset_description': 'Complete population coverage from the 2011 Census, providing comprehensive demographic and socio-economic information.'
+                }
+            
             substituted_results.append({'row': census_row, 'score': result['score']})
         else:
             substituted_results.append(result)
@@ -326,6 +346,22 @@ def main():
                         if not mbs_exists and mbs_name not in relevant_datasets:
                             dataset_results.append({'row': mbs_data, 'score': 1.0})
                             relevant_datasets.append(mbs_name)
+                
+                # Handle employment-related queries and add PIT_ITR to dataset_results
+                # Check if query contains employment-related keywords
+                employment_keywords = ['employment', 'job', 'work', 'income', 'salary', 'wage', 'earn']
+                query_lower = user_input.lower()
+                if any(keyword in query_lower for keyword in employment_keywords):
+                    # Add PIT_ITR dataset to dataset_results if not already present
+                    pit_itr_row = dataframes['datasets'][dataframes['datasets']["dataset_id"].str.upper() == "PIT_ITR"]
+                    if not pit_itr_row.empty:
+                        pit_itr_data = pit_itr_row.iloc[0]
+                        pit_itr_name = pit_itr_data['dataset_name']
+                        # Check if PIT_ITR is not already in dataset_results
+                        pit_itr_exists = any(result['row']['dataset_name'] == pit_itr_name for result in dataset_results)
+                        if not pit_itr_exists and pit_itr_name not in relevant_datasets:
+                            dataset_results.append({'row': pit_itr_data, 'score': 1.0})
+                            relevant_datasets.append(pit_itr_name)
                 
                 # Store and display the complete response
                 capture_and_display_response(

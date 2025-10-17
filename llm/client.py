@@ -16,7 +16,11 @@ class LLMClient:
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt}
                 ],
-                seed=self.seed
+                seed=self.seed,
+                temperature=0,  # Deterministic responses
+                top_p=1,        # Use all tokens (no sampling)
+                frequency_penalty=0,  # No frequency penalty
+                presence_penalty=0    # No presence penalty
             )
             return response.choices[0].message.content.strip()
         except Exception as e:

@@ -25,6 +25,10 @@ import os
 if 'PYTHONHASHSEED' not in os.environ:
     os.environ['PYTHONHASHSEED'] = str(SEED)
 
+# Set environment variables for additional determinism
+os.environ['CUBLAS_WORKSPACE_CONFIG'] = ':4096:8'
+os.environ['TOKENIZERS_PARALLELISM'] = 'false'  # Avoid threading issues in transformers
+
 # API Configuration
 def load_openai_api_key():
     """Load OpenAI API key from various sources."""

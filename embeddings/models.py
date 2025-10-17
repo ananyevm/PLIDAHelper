@@ -25,6 +25,14 @@ class ModelManager:
         # Ensure deterministic behavior by setting the seed before each encoding
         import torch
         import numpy as np
+        import random
         torch.manual_seed(SEED)
         np.random.seed(SEED)
+        random.seed(SEED)
+        torch.cuda.manual_seed_all(SEED)
+        
+        # Ensure deterministic operations
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+        
         return model.encode(texts, convert_to_numpy=True, **kwargs)

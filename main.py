@@ -142,7 +142,7 @@ def display_single_response(response_data, dataframes, search_engine, search_fil
         st.markdown(narrative_intro)
     
     # Check relevance
-    if gpt_data['relevance_score'] < 6:
+    if gpt_data['relevance_score'] < 5:
         result_display.display_low_relevance()
         return
     
@@ -301,7 +301,7 @@ def main():
             gpt_data = query_analyzer.analyze_query(user_input)
             
             # Check relevance
-            if gpt_data['relevance_score'] < 6:
+            if gpt_data['relevance_score'] < 5:
                 # For low relevance, just display the message without storing
                 result_display.display_low_relevance()
             else:

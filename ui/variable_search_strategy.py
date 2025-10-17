@@ -187,10 +187,12 @@ class VisaSearchStrategy(SearchStrategy):
     def search(self, var_desc, search_query, search_engine, **kwargs):
         """Search only in VISA dataset for visa/migration variables."""
         # Filter to only VISA dataset
+        # Remove boost_datasets from kwargs to avoid duplicate argument
+        search_kwargs = {k: v for k, v in kwargs.items() if k != 'boost_datasets'}
         results = search_engine.search_variables(
             search_query, 
             boost_datasets=['VISA'],
-            **kwargs
+            **search_kwargs
         )
         
         # Filter results to only include VISA dataset
@@ -227,13 +229,13 @@ class EmploymentSearchStrategy(SearchStrategy):
     def _standard_search(self, var_desc, search_query, search_engine, **kwargs):
         """Execute standard semantic search."""
         index_name = kwargs.get('index_name', 'plida4')
-        relevant_datasets = kwargs.get('relevant_datasets')
+        boost_datasets = kwargs.get('boost_datasets')
         topic = kwargs.get('topic')
         
         results = search_engine.search_variables(
             search_query, 
             index_name, 
-            boost_datasets=relevant_datasets,
+            boost_datasets=boost_datasets,
             topic=topic,
             use_expansion=True,
             use_openai_relevance=True,
@@ -426,7 +428,7 @@ class VariableSearchCoordinator:
         # Execute search
         search_params = {
             'index_name': index_name,
-            'relevant_datasets': kwargs.get('relevant_datasets'),
+            'boost_datasets': kwargs.get('boost_datasets'),
             'topic': kwargs.get('topic')
         }
         

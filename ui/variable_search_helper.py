@@ -40,7 +40,7 @@ class VariableSearchHelper:
             search_engine,
             search_filters,
             topic=topic,
-            relevant_datasets=relevant_datasets
+            boost_datasets=relevant_datasets
         )
         
         # Step 2: Apply population filtering if available

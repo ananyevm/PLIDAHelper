@@ -136,6 +136,8 @@ def initialize_system():
 
 def populate_response_with_variables(structured_response, categorized, search_engine, search_filters, query_analyzer, user_input, topic, relevant_datasets, is_longitudinal, dataframes):
     """Populate the Response object with actual variable search results."""
+    print(f"DEBUG: populate_response_with_variables called")
+    print(f"DEBUG: Initial conceptual variables: {[var.name for var in structured_response.conceptual_variables] if structured_response else 'None'}")
     if not structured_response or not categorized:
         return
     
@@ -156,13 +158,20 @@ def populate_response_with_variables(structured_response, categorized, search_en
     
     # Check if any variable triggers employment income addition
     employment_detected = False
+    employment_income_added = False  # State variable to track if Employment income was already added
     
     # Process each conceptual variable
     for conceptual_var in structured_response.conceptual_variables:
         var_desc = conceptual_var.name
         
+        # Check if Employment income already exists
+        if var_desc.lower() == "employment income":
+            print(f"DEBUG: Found existing 'Employment income' variable in conceptual_variables")
+            employment_income_added = True
+        
         # Check if this is an employment status variable
         if VariableType.is_employment(var_desc):
+            print(f"DEBUG: Employment detected in variable: '{var_desc}'")
             employment_detected = True
         
         # Determine variable category for search
@@ -212,8 +221,9 @@ def populate_response_with_variables(structured_response, categorized, search_en
             # If variable search fails, continue with next variable
             continue
     
-    # Add employment income as conceptual variable if employment status detected
-    if employment_detected:
+    # Add employment income as conceptual variable if employment status detected and not already added
+    if employment_detected and not employment_income_added:
+        print(f"DEBUG: About to add Employment income. employment_detected={employment_detected}, employment_income_added={employment_income_added}")
         # Determine appropriate variable type based on query type
         if structured_response.query_type == "causal":
             # In causal analysis, employment income is typically an outcome/indicator
@@ -224,6 +234,7 @@ def populate_response_with_variables(structured_response, categorized, search_en
         
         # Add employment income as conceptual variable
         employment_income_var = structured_response.add_conceptual_variable("Employment income", employment_income_type)
+        employment_income_added = True  # Mark as added to prevent duplicates
         
         # Search for employment income variables in PIT_ITR
         try:
@@ -397,6 +408,7 @@ def display_single_response(response_data, dataframes, search_engine, search_fil
     dataset_results = response_data['dataset_results']
     start_time = response_data['start_time']
     timestamp = response_data['timestamp']
+    structured_response = response_data.get('structured_response')
     
     # Display narrative introduction
     reformulated_question = gpt_data.get('reformulated_question', user_input)
@@ -522,6 +534,12 @@ def display_single_response(response_data, dataframes, search_engine, search_fil
             else:
                 all_combined_dataset_ids.append(dataset_id_set)
     
+    # Add dataset recommendations from structured response if available
+    if structured_response:
+        for conceptual_var in structured_response.conceptual_variables:
+            if conceptual_var.recommended_datasets:
+                all_combined_dataset_ids.extend(conceptual_var.recommended_datasets)
+    
     # Remove duplicates for unified dataset list
     unique_dataset_ids = list(set(all_combined_dataset_ids))
     
@@ -584,9 +602,10 @@ def main():
             
             # Add new query option
             st.markdown("---")
-            st.write("You can submit a new query by opening a new chat above.")
+            #st.write("You can submit a new query by opening a new chat above.")
     
     if user_input:
+        print(f"DEBUG: Processing query: '{user_input}'")
         start_time = time.time()
         
         try:
@@ -675,6 +694,42 @@ def main():
                             gpt_data['topic']
                         )
                 
+                # Check for employment variables in categorized results and add PIT_ITR if needed
+                # This only adds PIT_ITR to dataset results - Employment income conceptual variable
+                # is handled separately in populate_response_with_variables
+                if categorized:
+                    from ui.variable_search_strategy import VariableType
+                    employment_detected_in_variables = False
+                    
+                    # Check all variable categories for employment-related variables
+                    all_variables = []
+                    if causal_data['is_causal'] and causal_data['confidence'] > 0.6:
+                        all_variables.extend(categorized.get('causal_variables', []))
+                        all_variables.extend(categorized.get('outcome_variables', []))
+                        all_variables.extend(categorized.get('control_variables', []))
+                    else:
+                        all_variables.extend(categorized.get('main_variables', []))
+                        all_variables.extend(categorized.get('subgroups', []))
+                    
+                    # Check if any variable is employment-related
+                    for var_desc in all_variables:
+                        if VariableType.is_employment(var_desc):
+                            employment_detected_in_variables = True
+                            break
+                    
+                    # Add PIT_ITR if employment detected and not already present
+                    # This ensures PIT_ITR appears in main datasets section
+                    if employment_detected_in_variables:
+                        pit_itr_row = dataframes['datasets'][dataframes['datasets']["dataset_id"].str.upper() == "PIT_ITR"]
+                        if not pit_itr_row.empty:
+                            pit_itr_data = pit_itr_row.iloc[0]
+                            pit_itr_name = pit_itr_data['dataset_name']
+                            # Check if PIT_ITR is not already in dataset_results
+                            pit_itr_exists = any(result['row']['dataset_name'] == pit_itr_name for result in dataset_results)
+                            if not pit_itr_exists and pit_itr_name not in relevant_datasets:
+                                dataset_results.append({'row': pit_itr_data, 'score': 1.0})
+                                relevant_datasets.append(pit_itr_name)
+                
                 # Store and display the complete response
                 capture_and_display_response(
                     user_input, gpt_data, causal_data, relevant_datasets, 
@@ -684,7 +739,7 @@ def main():
                 
                 # Add new query option after response
                 st.markdown("---")
-                st.write("You can submit a new query by opening a new chat above.")
+                #st.write("You can submit a new query by opening a new chat above.")
             
         except Exception as e:
             st.error(f"Error processing query: {e}")

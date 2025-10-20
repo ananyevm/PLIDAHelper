@@ -703,7 +703,7 @@ class ResultDisplay:
                 st.caption("ACLD provides longitudinal linkage but covers only a 5% sample of the population, while the full Census provides complete population coverage for cross-sectional analysis.")
     
     def check_and_display_linking_strategy(self, dataset_ids_collection, is_longitudinal=False):
-        """Check for SYNTHETIC_AEUID in datasets and display linking strategy."""
+        """Check for SYNTHETIC_AEUID and SPINE_ID in datasets and display linking strategy."""
         import pandas as pd
         
         if not dataset_ids_collection:
@@ -724,29 +724,29 @@ class ResultDisplay:
             return
             
         try:
-            # Load plida4.csv to check for SYNTHETIC_AEUID
+            # Load plida4.csv to check for SYNTHETIC_AEUID and SPINE_ID
             plida4_df = pd.read_csv('resources/plida4.csv')
             
-            # Find datasets that contain SYNTHETIC_AEUID
-            synthetic_datasets = plida4_df[
+            # Find datasets that contain SYNTHETIC_AEUID or SPINE_ID
+            linkable_datasets = plida4_df[
                 (plida4_df['dataset_id'].isin(all_dataset_ids)) &
-                (plida4_df['variable_name'] == 'SYNTHETIC_AEUID')
+                (plida4_df['variable_name'].isin(['SYNTHETIC_AEUID', 'SPINE_ID']))
             ]['dataset_id'].unique().tolist()
             
-            if synthetic_datasets:
+            if linkable_datasets:
                 st.markdown("## Linkage")
                 st.markdown("The real strength of PLIDA is the **capacity to link many data assets together**. Let's see which of the identified datasets could be linked.")
                 
                 st.write(
-                    "The following datasets contain the **SYNTHETIC_AEUID** variable, which enables potential "
+                    "The following datasets contain linking identifiers (**SYNTHETIC_AEUID** or **SPINE_ID**), which enable potential "
                     "data linking capabilities. You need to verify the specific linking rules and restrictions with the concordance files available in the ABS datalab."
                 )
                 
                 # Remove duplicates from linkable datasets
-                unique_synthetic_datasets = list(set(synthetic_datasets))
+                unique_linkable_datasets = list(set(linkable_datasets))
                 
                 # Display linkable datasets
-                for dataset_id in sorted(unique_synthetic_datasets):
+                for dataset_id in sorted(unique_linkable_datasets):
                     # Get dataset name from datasets.csv (except for CORE)
                     if dataset_id.upper() == 'CORE':
                         # For CORE, get from plida4 (more specific)
@@ -764,9 +764,33 @@ class ResultDisplay:
                     
                     st.write(f"• **{dataset_id}**: {dataset_name}")
                 
+                # Separate datasets by identifier type for detailed explanation
+                spine_id_datasets = plida4_df[
+                    (plida4_df['dataset_id'].isin(unique_linkable_datasets)) &
+                    (plida4_df['variable_name'] == 'SPINE_ID')
+                ]['dataset_id'].unique().tolist()
+                
+                synthetic_aeuid_datasets = plida4_df[
+                    (plida4_df['dataset_id'].isin(unique_linkable_datasets)) &
+                    (plida4_df['variable_name'] == 'SYNTHETIC_AEUID')
+                ]['dataset_id'].unique().tolist()
+                
+                # Provide specific guidance for each identifier type
+                if spine_id_datasets:
+                    st.write(
+                        f"The following datasets contain **SPINE_ID**: {', '.join(sorted(spine_id_datasets))}. "
+                        "SPINE_ID is the variable that enables linkage across datasets that are provided by different data custodians."
+                    )
+                
+                if synthetic_aeuid_datasets:
+                    st.write(
+                        f"The following datasets contain **SYNTHETIC_AEUID**: {', '.join(sorted(synthetic_aeuid_datasets))}. "
+                        "Linkage requires a concordance file that links the SYNTHETIC_AEUID records to the SPINE_ID records. "
+                        "You need to verify whether this concordance file is available in the ABS DataLab."
+                    )
+                
                 st.write(
-                    "**Important:** While these datasets have linking potential through SYNTHETIC_AEUID, "
-                    "you must verify the specific linking rules, restrictions, and documentation before "
+                    "**Important:** You must verify the specific linking rules, restrictions, and documentation before "
                     "attempting to link datasets. Contact the PLIDA team for detailed linking guidelines."
                 )
                 
@@ -1205,7 +1229,6 @@ class ResultDisplay:
         """
         # Collect dataset IDs for linking strategy
         all_dataset_ids = []
-        employment_detected = False
         section_has_population_warning = False
         
         for i, var_desc in enumerate(variables):
@@ -1213,10 +1236,6 @@ class ResultDisplay:
                 # Display variable description
                 container = st.empty()
                 ui.stream_text(container, f"**{start_number + i}. {var_desc}**")
-                
-                # Check if this is an employment status variable
-                if self._is_employment_status_variable(var_desc):
-                    employment_detected = True
                 
                 # Search and process the variable using the helper
                 var_results, dataset_note, additional_results = self.search_helper.search_and_process_variable(
@@ -1246,15 +1265,9 @@ class ResultDisplay:
                 
                 # Removed horizontal line for cleaner display
         
-        # Display PIT_ITR earnings variables if employment status detected
-        if employment_detected:
-            earnings_count, earnings_dataset_ids = self._display_pit_itr_earnings(search_engine, ui, relevant_datasets, start_number + len(variables))
-            next_number = start_number + len(variables) + earnings_count
-            # Add employment income dataset IDs to the collection
-            if earnings_dataset_ids:
-                all_dataset_ids.append(earnings_dataset_ids)
-        else:
-            next_number = start_number + len(variables)
+        # Employment income is now handled through the Response object system
+        # No need for separate PIT_ITR earnings display here
+        next_number = start_number + len(variables)
         
         # Add section-level population coverage note if any variable requires verification
         if section_has_population_warning:

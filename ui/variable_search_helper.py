@@ -141,6 +141,20 @@ class VariableSearchHelper:
         """
         all_dataset_ids = []
         
+        # Create available_datasets list for recommendations
+        available_datasets = []
+        try:
+            import pandas as pd
+            datasets_df = pd.read_csv('resources/datasets.csv')
+            for _, row in datasets_df.iterrows():
+                available_datasets.append({
+                    'dataset_id': row.get('dataset_id', ''),
+                    'dataset_name': row.get('dataset_name', ''),
+                    'dataset_description': row.get('dataset_description', '')
+                })
+        except Exception:
+            available_datasets = []
+        
         for var_desc in variables:
             # Search for the variable
             var_results, _, additional_results = self.search_and_process_variable(
@@ -161,5 +175,25 @@ class VariableSearchHelper:
                     dataset_ids = self.extract_dataset_ids_from_results(add_results)
                     if dataset_ids:
                         all_dataset_ids.append(dataset_ids)
+            
+            # If no results found, get dataset recommendations and include them
+            if not var_results and not additional_results and query_analyzer and available_datasets:
+                try:
+                    # Apply relevance filtering to var_results (should be empty, but just in case)
+                    from ui.display import ResultDisplay
+                    display_helper = ResultDisplay()
+                    filtered_results = display_helper._filter_by_relevance_score(var_results or [], min_threshold=0.51)
+                    
+                    if not filtered_results:
+                        recommendation = query_analyzer.recommend_datasets_for_conceptual_variable(
+                            var_desc, available_datasets
+                        )
+                        if recommendation.get('recommended_datasets'):
+                            # Convert recommended dataset IDs to a set and add to collection
+                            recommended_ids = set(recommendation['recommended_datasets'])
+                            all_dataset_ids.append(recommended_ids)
+                except Exception:
+                    # If recommendation fails, continue with next variable
+                    continue
         
         return all_dataset_ids

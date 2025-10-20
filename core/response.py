@@ -44,6 +44,21 @@ class Response:
     
     def add_conceptual_variable(self, name: str, variable_type: str) -> ConceptualVariable:
         """Add a new conceptual variable and return it for further modification."""
+        # Debug: Track Employment income additions
+        if name == "Employment income":
+            print(f"DEBUG: add_conceptual_variable called for 'Employment income' with type '{variable_type}'")
+            print(f"DEBUG: Current conceptual variables: {[var.name for var in self.conceptual_variables]}")
+        
+        # Check if a conceptual variable with this name already exists
+        for existing_var in self.conceptual_variables:
+            if existing_var.name == name:
+                if name == "Employment income":
+                    print(f"DEBUG: Found existing 'Employment income' variable, returning it")
+                return existing_var  # Return existing variable instead of creating duplicate
+        
+        # Create new conceptual variable if it doesn't exist
+        if name == "Employment income":
+            print(f"DEBUG: Creating new 'Employment income' variable")
         conceptual_var = ConceptualVariable(name=name, variable_type=variable_type)
         self.conceptual_variables.append(conceptual_var)
         return conceptual_var
@@ -153,6 +168,8 @@ class Response:
             categorized: Categorized variables
             dataset_results: Dataset search results
         """
+        print(f"DEBUG: Response.from_analysis_data called")
+        print(f"DEBUG: Categorized variables: {categorized}")
         # Determine query type
         is_causal = causal_data.get('is_causal', False) and causal_data.get('confidence', 0) > 0.6
         query_type = "causal" if is_causal else "descriptive"

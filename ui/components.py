@@ -28,12 +28,13 @@ class UIComponents:
         """)
         
         # Add examples
-        with st.expander("💡 Example Research Questions", expanded=False):
+        with st.expander("💡 Example Questions", expanded=False):
             st.markdown("""
             **Good examples:**
-            - "Impact of NDIS on mental healthcare utilization"
-            - "Employment outcomes for refugees in Australia"
-            - "Factors affecting aged care service usage"
+            - "What is the average life expectancy of Aboriginal men living in Darwin?"
+            - "Which industries attract most STEM degree graduates?" 
+            - "Impact of NDIS participation on the utilization of mental healthcare."
+
             
             **Less effective:**
             - "Tell me about health" (too broad)
@@ -88,31 +89,27 @@ class UIComponents:
                 border: 2px dashed #1f77b4;
                 border-radius: 10px;
                 background-color: rgba(31, 119, 180, 0.05);
+                min-height: 60px;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                position: relative;
+                width: 100%;
+                box-sizing: border-box;
             }
             
-            .loading-dots {
-                display: inline-block;
-            }
-            
-            .loading-dots::after {
-                content: '';
-                animation: dots 1.5s infinite;
-            }
-            
-            @keyframes dots {
-                0%, 20% { content: ''; }
-                40% { content: '.'; }
-                60% { content: '..'; }
-                80%, 100% { content: '...'; }
-            }
             </style>
         """, unsafe_allow_html=True)
         
-        # Create container and render loading content inside it
+        # Create a stable container that won't cause layout shifts
         loading_container = st.empty()
+        
+        # Create a wrapper div to ensure stable positioning
         loading_container.markdown("""
-            <div class="loading-indicator">
-                🔍 Collecting PLIDA datasets and variables<span class="loading-dots"></span>
+            <div class="loading-wrapper" style="min-height: 100px; position: relative;">
+                <div class="loading-indicator">
+                    🔍 Collecting PLIDA datasets and variables
+                </div>
             </div>
         """, unsafe_allow_html=True)
         

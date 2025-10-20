@@ -292,6 +292,18 @@ class ResultDisplay:
         regular_results = [r for r in search_results if not r.get('is_core_alternative', False)]
         core_alternatives = [r for r in search_results if r.get('is_core_alternative', False)]
         
+        # Sort both result sets by relevance score in descending order
+        regular_results = sorted(
+            regular_results,
+            key=lambda x: x.get('openai_relevance', 0) or 0,
+            reverse=True
+        )
+        core_alternatives = sorted(
+            core_alternatives,
+            key=lambda x: x.get('openai_relevance', 0) or 0,
+            reverse=True
+        )
+        
         # Display regular results first
         if regular_results:
             for result in regular_results:

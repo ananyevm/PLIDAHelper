@@ -5,11 +5,115 @@ from data import DataLoader
 from search import IndexBuilder, SemanticSearchEngine, SearchFilters
 from llm import QueryAnalyzer, CausalAnalyzer
 from ui import UIComponents, ResultDisplay
+from core import Response
 # EmbeddingManager is initialized within other components
 
 # Initialize session state for responses
 if 'current_response' not in st.session_state:
     st.session_state.current_response = None
+if 'structured_response' not in st.session_state:
+    st.session_state.structured_response = None
+
+# ================================
+# DEBUGGING FUNCTIONS
+# ================================
+# The following functions provide access to structured query results for debugging:
+# 
+# 1. get_response_json(include_metadata=False) -> str
+#    Returns JSON string of the latest response
+# 
+# 2. get_response_dict(include_metadata=False) -> dict  
+#    Returns dictionary of the latest response
+#
+# 3. print_response_summary() -> None
+#    Prints a formatted summary to console
+#
+# The structured response contains:
+# - query_type: "causal" or "descriptive"
+# - conceptual_variables: Each with variable_type:
+#   * causal-treatment, causal-outcome, causal-control
+#   * descriptive-main, descriptive-subgroup
+# - actual_variables: List of (dataset_id, variable_name) matches
+# - recommended_datasets: When no specific variables found
+# 
+# AUTOMATIC FEATURES:
+# - Employment Income: If any conceptual variable is employment-related,
+#   "Employment income" is automatically added as a conceptual variable
+#   with PIT_ITR earnings variables (wages, salary, etc.)
+# - Relevance Sorting: All actual variables within each conceptual variable
+#   are automatically sorted by relevance score in descending order
+# ================================
+
+def get_response_json(include_metadata=False):
+    """
+    Get the JSON representation of the latest structured response.
+    
+    This function provides access to the internal structured representation of query results,
+    including conceptual variables with their types (causal-treatment, causal-outcome, 
+    causal-control, descriptive-main, descriptive-subgroup) and their associated actual 
+    variables from datasets.
+    
+    Args:
+        include_metadata: Whether to include internal metadata (confidence, topic, etc.)
+        
+    Returns:
+        str: JSON string of the response, or None if no response available
+        
+    Example:
+        >>> json_response = get_response_json()
+        >>> # Returns structured JSON with query type, conceptual variables, and matches
+    """
+    if st.session_state.structured_response:
+        return st.session_state.structured_response.to_json(include_metadata=include_metadata)
+    return None
+
+def get_response_dict(include_metadata=False):
+    """
+    Get the dictionary representation of the latest structured response.
+    
+    Args:
+        include_metadata: Whether to include internal metadata
+        
+    Returns:
+        dict: Dictionary of the response, or None if no response available
+    """
+    if st.session_state.structured_response:
+        return st.session_state.structured_response.to_dict(include_metadata=include_metadata)
+    return None
+
+def print_response_summary():
+    """
+    Print a summary of the latest structured response to console.
+    Useful for debugging in Python console or notebooks.
+    """
+    if not st.session_state.structured_response:
+        print("No structured response available")
+        return
+    
+    response = st.session_state.structured_response
+    print(f"Query: {response.query}")
+    print(f"Type: {response.query_type}")
+    print(f"Conceptual Variables: {len(response.conceptual_variables)}")
+    print(f"Relevant Datasets: {response.relevant_datasets}")
+    print()
+    
+    for i, var in enumerate(response.conceptual_variables, 1):
+        print(f"{i}. {var.name} ({var.variable_type}):")
+        if var.actual_variables:
+            # Sort variables by relevance score in descending order for display
+            sorted_variables = sorted(
+                var.actual_variables,
+                key=lambda x: x.relevance_score or 0,
+                reverse=True
+            )
+            for match in sorted_variables:
+                relevance = f" [{match.relevance_score:.2f}]" if match.relevance_score else ""
+                print(f"   • {match.dataset_id}.{match.variable_name}{relevance}")
+        if var.recommended_datasets:
+            print(f"   Recommended datasets: {', '.join(var.recommended_datasets)}")
+        if not var.actual_variables and not var.recommended_datasets:
+            print("   No matches or recommendations")
+        print()
 
 # Initialize components
 @st.cache_resource
@@ -30,7 +134,138 @@ def initialize_system():
     
     return data_loader, search_engine, dataframes, query_analyzer
 
-def capture_and_display_response(user_input, gpt_data, causal_data, relevant_datasets, dataset_results, dataframes, search_engine, search_filters, query_analyzer, causal_analyzer, ui, result_display, start_time):
+def populate_response_with_variables(structured_response, categorized, search_engine, search_filters, query_analyzer, user_input, topic, relevant_datasets, is_longitudinal, dataframes):
+    """Populate the Response object with actual variable search results."""
+    if not structured_response or not categorized:
+        return
+    
+    # Create available_datasets list from dataframes for dataset recommendations
+    available_datasets = []
+    if dataframes and 'datasets' in dataframes:
+        for _, row in dataframes['datasets'].iterrows():
+            available_datasets.append({
+                'dataset_id': row.get('dataset_id', ''),
+                'dataset_name': row.get('dataset_name', ''),
+                'dataset_description': row.get('dataset_description', '')
+            })
+    
+    # Import helper for variable search
+    from ui.variable_search_helper import VariableSearchHelper
+    from ui.variable_search_strategy import VariableType
+    search_helper = VariableSearchHelper()
+    
+    # Check if any variable triggers employment income addition
+    employment_detected = False
+    
+    # Process each conceptual variable
+    for conceptual_var in structured_response.conceptual_variables:
+        var_desc = conceptual_var.name
+        
+        # Check if this is an employment status variable
+        if VariableType.is_employment(var_desc):
+            employment_detected = True
+        
+        # Determine variable category for search
+        if conceptual_var.variable_type.startswith('causal-'):
+            category = conceptual_var.variable_type.split('-')[1]  # treatment, outcome, control
+        else:
+            category = conceptual_var.variable_type.split('-')[1]  # main, subgroup
+        
+        try:
+            # Search for variables
+            var_results, dataset_note, additional_results = search_helper.search_and_process_variable(
+                var_desc, search_engine, search_filters, query_analyzer, 
+                user_input, topic, relevant_datasets, is_longitudinal, available_datasets, category
+            )
+            
+            # Apply ACLD to CENSUS substitution if not longitudinal
+            from ui.display import ResultDisplay
+            display_helper = ResultDisplay()
+            var_results = display_helper.substitute_acld_variables_with_census(var_results, is_longitudinal, category)
+            
+            # Filter results by relevance score (only show variables with >51% relevance)
+            filtered_results = display_helper._filter_by_relevance_score(var_results, min_threshold=0.51)
+            
+            # Add variable matches to Response object
+            for result in filtered_results:
+                row = result['row']
+                structured_response.add_variable_match(
+                    conceptual_var.name,
+                    row.get('dataset_id', ''),
+                    row.get('variable_name', ''),
+                    row.get('description', ''),
+                    result.get('openai_relevance', None)
+                )
+            
+            # If no variables found, get dataset recommendations
+            if not filtered_results and query_analyzer and available_datasets:
+                recommendation = query_analyzer.recommend_datasets_for_conceptual_variable(
+                    var_desc, available_datasets
+                )
+                if recommendation['recommended_datasets']:
+                    structured_response.add_dataset_recommendations(
+                        conceptual_var.name, 
+                        recommendation['recommended_datasets']
+                    )
+                    
+        except Exception as e:
+            # If variable search fails, continue with next variable
+            continue
+    
+    # Add employment income as conceptual variable if employment status detected
+    if employment_detected:
+        # Determine appropriate variable type based on query type
+        if structured_response.query_type == "causal":
+            # In causal analysis, employment income is typically an outcome/indicator
+            employment_income_type = "causal-outcome"
+        else:
+            # In descriptive analysis, employment income is a main variable
+            employment_income_type = "descriptive-main"
+        
+        # Add employment income as conceptual variable
+        employment_income_var = structured_response.add_conceptual_variable("Employment income", employment_income_type)
+        
+        # Search for employment income variables in PIT_ITR
+        try:
+            earnings_results = search_engine.search_variables(
+                "wages and salary", 
+                "ato", 
+                boost_datasets=relevant_datasets,
+                use_openai_relevance=True,
+                conceptual_variable="wages and salary"
+            )
+            
+            if earnings_results:
+                # Filter to only show PIT_ITR results
+                pit_itr_results = [result for result in earnings_results 
+                                 if result['row'].get('dataset_id', '').upper() == 'PIT_ITR']
+                
+                # Remove duplicates based on variable_name
+                seen_variables = set()
+                unique_results = []
+                for result in pit_itr_results:
+                    var_name = result['row'].get('variable_name', 'Unknown')
+                    if var_name not in seen_variables:
+                        seen_variables.add(var_name)
+                        unique_results.append(result)
+                
+                # Add employment income variable matches to Response object
+                for result in unique_results[:5]:  # Limit to top 5 results
+                    row = result['row']
+                    structured_response.add_variable_match(
+                        "Employment income",
+                        row.get('dataset_id', ''),
+                        row.get('variable_name', ''),
+                        row.get('description', ''),
+                        result.get('openai_relevance', None)
+                    )
+                    
+        except Exception as e:
+            # If employment income search fails, still add the conceptual variable
+            # but recommend PIT_ITR dataset
+            structured_response.add_dataset_recommendations("Employment income", ["PIT_ITR"])
+
+def capture_and_display_response(user_input, gpt_data, causal_data, relevant_datasets, dataset_results, dataframes, search_engine, search_filters, query_analyzer, causal_analyzer, ui, result_display, start_time, categorized=None):
     """Capture and display a complete response, storing it in session state."""
     response_data = {
         'user_input': user_input,
@@ -42,13 +277,71 @@ def capture_and_display_response(user_input, gpt_data, causal_data, relevant_dat
         'start_time': start_time
     }
     
+    # Create structured Response object for internal representation
+    structured_response = None
+    if categorized:
+        structured_response = Response.from_analysis_data(
+            user_input, gpt_data, causal_data, categorized, dataset_results
+        )
+        
+        # Populate with actual variable search results
+        populate_response_with_variables(
+            structured_response, categorized, search_engine, search_filters, 
+            query_analyzer, user_input, gpt_data.get('topic', ''), relevant_datasets, 
+            gpt_data.get('is_longitudinal', False), dataframes
+        )
+        
+        response_data['structured_response'] = structured_response
+    
     # Store this response
     st.session_state.current_response = response_data
+    
+    # Store structured response separately for easy access
+    if structured_response:
+        st.session_state.structured_response = structured_response
     
     # Display the response
     with st.container():
         # Display the response content directly without header
         display_single_response(response_data, dataframes, search_engine, search_filters, query_analyzer, causal_analyzer, ui, result_display)
+        
+        # Add debug JSON output
+        # if structured_response:
+        #     st.markdown("---")
+        #     st.markdown("## Debug: Structured Response JSON")
+        #     
+        #     # Show JSON without metadata first
+        #     with st.expander("Response JSON (Clean)", expanded=False):
+        #         json_output = structured_response.to_json(include_metadata=False)
+        #         st.code(json_output, language='json')
+        #     
+        #     # Show JSON with metadata
+        #     with st.expander("Response JSON (With Metadata)", expanded=False):
+        #         json_output_meta = structured_response.to_json(include_metadata=True)
+        #         st.code(json_output_meta, language='json')
+        #     
+        #     # Show summary stats
+        #     with st.expander("Response Summary", expanded=False):
+        #         st.write(f"**Query Type:** {structured_response.query_type}")
+        #         st.write(f"**Number of Conceptual Variables:** {len(structured_response.conceptual_variables)}")
+        #         st.write(f"**Relevant Datasets:** {len(structured_response.relevant_datasets)}")
+        #         
+        #         for i, var in enumerate(structured_response.conceptual_variables, 1):
+        #             st.write(f"**{i}. {var.name}** ({var.variable_type}):")
+        #             st.write(f"   - Actual variables: {len(var.actual_variables)}")
+        #             st.write(f"   - Recommended datasets: {len(var.recommended_datasets)}")
+        #             if var.actual_variables:
+        #                 # Sort variables by relevance score in descending order for display
+        #                 sorted_variables = sorted(
+        #                     var.actual_variables,
+        #                     key=lambda x: x.relevance_score or 0,
+        #                     reverse=True
+        #                 )
+        #                 for j, match in enumerate(sorted_variables, 1):
+        #                     relevance = f" (relevance: {match.relevance_score:.2f})" if match.relevance_score else ""
+        #                     st.write(f"     {j}. {match.dataset_id}.{match.variable_name}{relevance}")
+        #             if var.recommended_datasets:
+        #                 st.write(f"     Recommended: {', '.join(var.recommended_datasets)}")
 
 def substitute_acld_with_census(dataset_results, is_longitudinal):
     """Substitute ACLD with CENSUS when longitudinal analysis is not needed."""
@@ -363,11 +656,30 @@ def main():
                             dataset_results.append({'row': pit_itr_data, 'score': 1.0})
                             relevant_datasets.append(pit_itr_name)
                 
+                # Categorize variables for Response object
+                variables = gpt_data.get('variables', [])
+                categorized = None
+                if variables:
+                    if causal_data['is_causal'] and causal_data['confidence'] > 0.6:
+                        # Categorize variables for causal analysis
+                        categorized = causal_analyzer.categorize_variables(
+                            variables, 
+                            user_input, 
+                            gpt_data['topic']
+                        )
+                    else:
+                        # Categorize variables for descriptive analysis
+                        categorized = causal_analyzer.descriptive_categorize_variables(
+                            variables,
+                            user_input,
+                            gpt_data['topic']
+                        )
+                
                 # Store and display the complete response
                 capture_and_display_response(
                     user_input, gpt_data, causal_data, relevant_datasets, 
                     dataset_results, dataframes, search_engine, search_filters, 
-                    query_analyzer, causal_analyzer, ui, result_display, start_time
+                    query_analyzer, causal_analyzer, ui, result_display, start_time, categorized
                 )
                 
                 # Add new query option after response
